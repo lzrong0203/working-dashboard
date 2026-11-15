@@ -26,6 +26,10 @@ LONG_BUSY_H = 3  # one uninterrupted busy streak this long -> FYI (stuck? runawa
 STALE_SOURCE_S = 180  # owning machine silent this long -> we can't see it; never push
 
 
+# What Claude Code says a waiting session waits for -> how the card says it.
+WAITING_FOR = {"permission prompt": "核准權限"}
+
+
 def _span(mins: int) -> str:
     return f"{mins} 分鐘" if mins < 120 else f"{mins / 60:.1f} 小時"
 
@@ -47,21 +51,23 @@ def attention(s: dict, now_ms: int, source_age_s: float) -> tuple[int, str]:
 
     if status == "gone":
         return OK, ""
+    what = s.get("status_detail") or ""
+    what = WAITING_FOR.get(what, what)
 
     # The owning machine went quiet: what we show is a guess, so it may sit in
     # "needs you" but must never buzz the phone. (The card adds its own
     # "this machine hasn't reported" line, so the reason stays short.)
     if source_age_s > STALE_SOURCE_S:
         if status == "waiting":
-            return SOON, f"可能還在等你（{_span(mins)}）"
+            return SOON, f"可能還在等你{what and '：' + what}（{_span(mins)}）"
         return FYI, ""
 
     if status == "waiting":
         # A permission prompt you are about to answer anyway shouldn't buzz:
         # it goes to the top of the board at once, and pushes after a grace.
         if mins >= WAIT_PUSH_MIN:
-            return URGENT, f"等你 {_span(mins)}"
-        return SOON, "剛開始等你"
+            return URGENT, f"等你{what and '：' + what} {_span(mins)}"
+        return SOON, f"剛開始等你{what and '：' + what}"
 
     if status == "idle":
         # Finished work is worth reading while it's fresh; after that it is

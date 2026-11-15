@@ -165,6 +165,8 @@ h2 small { font: 400 .78rem var(--font); color: var(--muted); margin-left: .35re
 .title { margin: 0; font: 700 .95rem/1.4 var(--font); }
 .summary { margin: 0; color: var(--ink); display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 .summary .age { color: var(--muted); font-size: .76rem; }
+.summary.recap { -webkit-line-clamp: var(--lines, 4); }
+.summary .lbl { font-weight: 600; font-size: .72rem; color: var(--muted); margin-right: .45em; letter-spacing: .04em; }
 .prompt { margin: 0; color: var(--muted); font-size: .82rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .items { display: flex; flex-wrap: wrap; gap: .3rem; }
 .meta { color: var(--muted); font: .72rem var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }

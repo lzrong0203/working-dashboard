@@ -58,6 +58,8 @@ class TailState:
     last_prompt: str = ""
     away_summary: str = ""
     away_summary_at: int = 0
+    last_reply: str = ""
+    last_reply_at: int = 0
     git_branch: str = ""
 
 
@@ -105,7 +107,8 @@ class TranscriptTail:
 
     def _absorb(self, line: bytes) -> None:
         # cheap prefilter: only parse the few record types we care about
-        if not (b'"ai-title"' in line or b'"last-prompt"' in line or b"away_summary" in line or b'"gitBranch"' in line):
+        reply = b'"assistant"' in line and b'"text"' in line
+        if not (reply or b'"ai-title"' in line or b'"last-prompt"' in line or b"away_summary" in line or b'"gitBranch"' in line):
             return
         try:
             d = json.loads(line)
@@ -120,6 +123,12 @@ class TranscriptTail:
         elif t == "system" and d.get("subtype") == "away_summary" and d.get("content"):
             st.away_summary = str(d["content"])
             st.away_summary_at = _iso_ms(d.get("timestamp", ""))
+        elif t == "assistant" and not d.get("isSidechain"):
+            parts = (d.get("message") or {}).get("content")
+            text = "\n".join(x.get("text", "") for x in parts if isinstance(x, dict) and x.get("type") == "text") if isinstance(parts, list) else ""
+            if text.strip():
+                st.last_reply = text.strip()[:2000]
+                st.last_reply_at = _iso_ms(d.get("timestamp", ""))
         if d.get("gitBranch"):
             st.git_branch = str(d["gitBranch"])
 
@@ -228,6 +237,7 @@ class ClaudeCollector:
                     kind=str(d.get("kind", "interactive")),
                     status=str(d.get("status", "unknown")),
                     status_since=int(d.get("statusUpdatedAt") or d.get("updatedAt") or 0),
+                    status_detail=str(d.get("waitingFor") or "") if d.get("status") == "waiting" else "",
                     updated_at=int(d.get("updatedAt") or 0),
                     started_at=int(d.get("startedAt") or 0),
                     version=str(d.get("version", "")),
@@ -239,6 +249,8 @@ class ClaudeCollector:
                     away_summary=t.away_summary if t else "",
                     away_summary_at=t.away_summary_at if t else 0,
                     last_prompt=t.last_prompt if t else "",
+                    last_reply=t.last_reply if t else "",
+                    last_reply_at=t.last_reply_at if t else 0,
                     account=acct.get("email", ""),
                     account_org=acct.get("org", ""),
                 )

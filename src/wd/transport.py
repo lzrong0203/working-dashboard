@@ -24,6 +24,10 @@ _BASE = [
     "ControlMaster=auto",
     "ControlPath=~/.ssh/wd-%C",
     "ControlPersist=10m",
+    # a roaming laptop leaves masters half-open; notice within ~30 s so the
+    # forwarded port is released and the next target can take it
+    "ServerAliveInterval=15",
+    "ServerAliveCountMax=2",
 ]
 SSH_OPTS = [x for o in [*_BASE, "ClearAllForwardings=yes"] for x in ("-o", o)]
 SSH_MUX_OPTS = [x for o in _BASE for x in ("-o", o)]  # for `-O forward -L ...`
@@ -81,6 +85,15 @@ def _http_ok(port: int) -> bool:
         return False
 
 
+def _quiet(cmd: list[str], timeout: float) -> int:
+    # DEVNULL, not pipes: `ssh -f` keeps inherited pipes open forever
+    try:
+        return subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=timeout).returncode
+    except subprocess.TimeoutExpired:
+        return 124
+
+
 def open_view(cfg: cfgmod.Config) -> list[tuple[str, int, bool]]:
     """Forward each realm's hub to its local view_port over wd's own ssh master.
 
@@ -98,19 +111,43 @@ def open_view(cfg: cfgmod.Config) -> list[tuple[str, int, bool]]:
             out.append((name, port, True))
             continue
         ok = False
-        for target in sorted(r.hub, key=lambda t: t != _last_good.get(name)):
-            if target == "local":
-                break
-            if subprocess.run(["ssh", *SSH_OPTS, "-O", "check", target], capture_output=True).returncode != 0:
-                # DEVNULL, not pipes: `ssh -f` keeps inherited pipes open forever
-                subprocess.run(["ssh", *SSH_OPTS, "-fN", target], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
-            subprocess.run(["ssh", *SSH_MUX_OPTS, "-O", "forward", "-L", f"{port}:127.0.0.1:{port}", target], capture_output=True, timeout=30)
+        targets = [t for t in sorted(r.hub, key=lambda t: t != _last_good.get(name)) if t != "local"]
+        if len(targets) < len(r.hub):
+            out.append((name, port, False))  # served locally; nothing to forward
+            continue
+        fwd = ["-L", f"{port}:127.0.0.1:{port}"]
+        for target in targets:  # a dead forward may still hold the port: release it
+            _quiet(["ssh", *SSH_MUX_OPTS, "-O", "cancel", *fwd, target], 15)
+        for target in targets:
+            if _quiet(["ssh", *SSH_OPTS, "-O", "check", target], 15) != 0:
+                _quiet(["ssh", *SSH_OPTS, "-fN", target], 30)
+            _quiet(["ssh", *SSH_MUX_OPTS, "-O", "forward", *fwd, target], 30)
             if _http_ok(port):
                 ok = True
                 _last_good[name] = target
                 break
         out.append((name, port, ok))
     return out
+
+
+def keep_views(cfg: cfgmod.Config, every_s: float = 20, stop=None) -> None:
+    """Agent thread on the viewing machine: keep every realm's board reachable
+    at its view_port, re-forwarding when a network change kills a tunnel."""
+    import sys
+
+    wanted = {n for n, r in cfg.realms.items() if r.view_port and "local" not in r.hub}
+    if not wanted:
+        return
+    last: dict[str, bool] = {}
+    while not (stop and stop.is_set()):
+        try:
+            for name, port, ok in open_view(cfg):
+                if name in wanted and last.get(name) != ok:
+                    print(f"[wd agent] {time.strftime('%H:%M')} view {name} :{port} {'up' if ok else 'down'}", file=sys.stderr)
+                    last[name] = ok
+        except Exception as e:  # never let the keeper kill the agent
+            print(f"[wd agent] view keeper: {e!r}", file=sys.stderr)
+        time.sleep(every_s if all(last.get(n) for n in wanted) else every_s * 3)
 
 
 def spool_dir(cfg: cfgmod.Config, realm: str):

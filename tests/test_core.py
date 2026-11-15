@@ -392,7 +392,10 @@ class OpenerTest(unittest.TestCase):
             self.assertEqual(req("POST", "/open", {"realm": "work", "url": "https://evil.example/"}, h)[0], 400)
             self.assertEqual(req("POST", "/open", {"realm": "personal", "url": ok_body["url"]}, h)[0], 404)
             self.assertEqual(req("POST", "/open", {"realm": "work", "url": "https://claude.ai/" + "a" * 2000}, h)[0], 400)
-            self.assertEqual(req("POST", "/open", None, {**h, "Content-Length": "-1"}, raw=b"x" * 10)[0], 413)
+            try:  # a bogus length is never read, so the reply may race a TCP reset
+                self.assertEqual(req("POST", "/open", None, {**h, "Content-Length": "-1"}, raw=b"x" * 10)[0], 413)
+            except ConnectionResetError:
+                pass
             self.assertEqual(req("POST", "/open", None, h, raw=b"x" * 5000)[0], 413)
             self.assertEqual(req("POST", "/open", ok_body, h)[0], 200)
             self.assertEqual(len(launched), 1)
@@ -499,3 +502,23 @@ class AttentionTest(unittest.TestCase):
         self.assertEqual(self.lvl("busy", 30), OK)
         self.assertEqual(self.lvl("busy", 60 * 4), FYI)
         self.assertEqual(self.lvl("gone", 1), OK)
+
+
+class RecapTest(unittest.TestCase):
+    def test_last_reply_and_alias(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "t.jsonl"
+            rows = [
+                {"type": "assistant", "timestamp": "2026-11-15T10:00:00Z", "message": {"content": [{"type": "text", "text": "第一段"}]}},
+                {"type": "assistant", "isSidechain": True, "message": {"content": [{"type": "text", "text": "subagent chatter"}]}},
+                {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash"}]}},
+                {"type": "assistant", "timestamp": "2026-11-15T10:05:00Z", "message": {"content": [{"type": "text", "text": "做完了：三件事"}]}},
+            ]
+            p.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+            st = TranscriptTail(p).update()
+            self.assertEqual(st.last_reply, "做完了：三件事")
+            self.assertGreater(st.last_reply_at, 0)
+        snap = redact(SessionSnap("r", "h", "p", 1, SID, status="shell", last_reply="x" * 900))
+        self.assertEqual((snap.status, snap.status_detail), ("busy", "shell"))
+        self.assertLessEqual(len(snap.last_reply), 400)
+        self.assertEqual(redact(SessionSnap("r", "h", "p", 1, SID, last_reply="secret"), "minimal").last_reply, "")

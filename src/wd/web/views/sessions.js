@@ -68,6 +68,18 @@ function studioArt(s, i) {
   return `<svg class="scene" style="--i:${i % 7}" viewBox="0 0 40 24" shape-rendering="crispEdges" aria-hidden="true">${p.join("")}</svg>`;
 }
 
+// What has this session been up to? The newer of Claude Code's own recap
+// (away_summary, written when you come back to a session) and Claude's latest
+// message to you, which usually closes a turn with its own summary.
+const plain = (t) => String(t || "").replace(/\*\*|__|`/g, "").replace(/^#+\s*/gm, "");
+function recap(s, now, lines = 4) {
+  const away = s.away_summary ? { t: s.away_summary, at: s.away_summary_at || 0, label: "回顧" } : null;
+  const reply = s.last_reply ? { t: plain(s.last_reply), at: s.last_reply_at || 0, label: s.status === "busy" ? "正在說" : "最後回覆" } : null;
+  const r = away && reply ? (reply.at > away.at ? reply : away) : away || reply;
+  if (!r) return s.last_prompt ? `<p class="summary">› ${esc(s.last_prompt)}</p>` : "";
+  return `<p class="summary recap" style="--lines:${Number(lines) || 4}" title="${esc(r.t)}"><b class="lbl">${esc(r.label)}</b>${esc(r.t)}${r.at ? ` <span class="age">· ${esc(ago(r.at, now))}前</span>` : ""}</p>`;
+}
+
 // ---- cards (desk, studio) ----------------------------------------------------
 function card(s, ctx, i = 0) {
   const now = ctx.now, look = WD.look;
@@ -84,8 +96,8 @@ function card(s, ctx, i = 0) {
     ${att.reason ? `<p class="reason">${esc(att.reason)}</p>` : ""}
     ${isStale(s) ? `<p class="reason">這台機器 ${esc(ago(now - s.source_age_s * 1000, now))}沒回報，狀態可能過時</p>` : ""}
     ${s.ai_title ? `<h3 class="title">${esc(s.ai_title)}</h3>` : ""}
-    ${s.away_summary ? `<p class="summary">${esc(s.away_summary)} <span class="age">· ${esc(ago(s.away_summary_at, now))}前</span></p>` : ""}
-    ${s.last_prompt ? `<p class="prompt" title="最後一句 prompt">› ${esc(s.last_prompt)}</p>` : ""}
+    ${recap(s, now)}
+    ${s.last_prompt && (s.away_summary || s.last_reply) ? `<p class="prompt" title="最後一句 prompt">› ${esc(s.last_prompt)}</p>` : ""}
     ${items ? `<div class="items">${items}</div>` : ""}
     ${s.status !== "gone" ? strip(s, now, ctx.hours) : ""}
     <footer><span class="meta">${metaLine(s)}</span>${openLink(s)}</footer>
@@ -101,7 +113,7 @@ function needCard(s, ctx) {
     <div class="body">
       <header><span class="name">${esc(nameOf(s))}</span><span class="chip realm realm-${esc(s.realm)}">${esc(s.host)} · ${esc(s.profile)}</span></header>
       ${s.ai_title ? `<h3 class="title">${esc(s.ai_title)}</h3>` : ""}
-      ${s.away_summary ? `<p class="summary">${esc(s.away_summary)}</p>` : s.last_prompt ? `<p class="summary">› ${esc(s.last_prompt)}</p>` : ""}
+      ${recap(s, ctx.now, 3)}
       ${s.attention?.reason ? `<p class="reason">${esc(s.attention.reason)}</p>` : ""}
       ${linkedItems(s, ctx) ? `<div class="items">${linkedItems(s, ctx)}</div>` : ""}
     </div>
@@ -193,7 +205,7 @@ function note(s, ctx) {
     <i class="pin" aria-hidden="true"></i>
     <header><span class="name">${esc(nameOf(s))}</span>${statusBadge(s, ctx.now)}</header>
     ${s.ai_title ? `<h3 class="title">${esc(s.ai_title)}</h3>` : ""}
-    ${s.away_summary ? `<p class="summary">${esc(s.away_summary)}</p>` : s.last_prompt ? `<p class="summary">› ${esc(s.last_prompt)}</p>` : ""}
+    ${recap(s, ctx.now, 3)}
     ${s.attention?.reason ? `<p class="reason">${esc(s.attention.reason)}</p>` : ""}
     <footer><span class="meta">${esc(s.host)} · ${esc(s.profile)}</span>${openLink(s)}</footer>
   </article>`;
@@ -224,7 +236,7 @@ WD.register({
       sources: m.sources,
       hosts: [...new Set([...m.sources.map((s) => s.host), ...live.map((s) => s.host)])].sort(),
     };
-    const banner = m.offline.length ? `<p class="banner">連不上：${m.offline.map((s) => esc(s.url)).join("、")}（ssh -L 通道開了嗎？試試 <code>wd view</code>）</p>` : "";
+    const banner = m.offline.length ? `<p class="banner">暫時連不上 ${m.offline.map((s) => esc(s.state?.realm || s.url.replace(/^https?:\/\//, ""))).join("、")}，自動重試中（換網路後通道約 1 分鐘內會自己接回；一直沒好再執行 <code>wd view</code>）</p>` : "";
     const body = WD.look === "flap" ? renderFlap(ctx) : WD.look === "kanban" ? renderKanban(ctx) : renderCards(ctx);
     el.innerHTML = banner + body;
   },

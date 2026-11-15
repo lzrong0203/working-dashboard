@@ -83,6 +83,9 @@ class View:
     # optional realm -> label shown on the board's open buttons (default: the
     # browser profile's own display name)
     browser_labels: dict[str, str] = field(default_factory=dict)
+    # the agent keeps realms with a view_port forwarded (re-forwarding after a
+    # network change), so the board never needs a manual `wd view`
+    keep_tunnels: bool = True
 
 
 @dataclass
@@ -192,6 +195,7 @@ def load(path: str | Path | None = None) -> Config:
         browser=str(v.get("browser", "Google Chrome")),
         browser_profiles={str(k): str(val) for k, val in (v.get("browser_profiles") or {}).items()},
         browser_labels={str(k): str(val) for k, val in (v.get("browser_labels") or {}).items()},
+        keep_tunnels=bool(v.get("keep_tunnels", True)),
     )
 
     return Config(

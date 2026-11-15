@@ -12,13 +12,18 @@ from dataclasses import asdict, dataclass, field
 # Status values come straight from Claude Code ("busy" | "idle" | "waiting").
 # "gone" is assigned by the hub when a session disappears from its source.
 STATUSES = ("waiting", "busy", "idle", "gone", "unknown")
+# Newer Claude Code states folded into the ones above; the raw value is kept in
+# ``status_detail`` so nothing is lost.
+STATUS_ALIASES = {"shell": "busy"}
 
 TITLE_MAX = 120
 SUMMARY_MAX = 600
 PROMPT_MAX = 240
+REPLY_MAX = 400
+DETAIL_MAX = 60
 
 # Fields dropped when a realm is configured with send = "minimal".
-CONTENT_FIELDS = ("cwd", "git_branch", "ai_title", "away_summary", "last_prompt", "tmux", "bridge_session_id", "account", "account_org")
+CONTENT_FIELDS = ("cwd", "git_branch", "ai_title", "away_summary", "last_prompt", "last_reply", "tmux", "bridge_session_id", "account", "account_org")
 
 
 @dataclass
@@ -32,6 +37,7 @@ class SessionSnap:
     kind: str = "interactive"
     status: str = "unknown"
     status_since: int = 0  # epoch ms
+    status_detail: str = ""  # e.g. what a waiting session waits for ("permission prompt")
     updated_at: int = 0  # epoch ms
     started_at: int = 0  # epoch ms
     version: str = ""
@@ -43,6 +49,8 @@ class SessionSnap:
     away_summary: str = ""
     away_summary_at: int = 0  # epoch ms
     last_prompt: str = ""
+    last_reply: str = ""  # Claude's latest text to you (clipped), the turn's own recap
+    last_reply_at: int = 0  # epoch ms
     account: str = ""  # Claude login of this profile (email)
     account_org: str = ""
     linked_items: list[str] = field(default_factory=list)
@@ -72,10 +80,15 @@ def redact(snap: SessionSnap, send: str = "full") -> SessionSnap:
     snap.ai_title = _clip(snap.ai_title, TITLE_MAX)
     snap.away_summary = _clip(snap.away_summary, SUMMARY_MAX)
     snap.last_prompt = _clip(snap.last_prompt, PROMPT_MAX)
+    snap.last_reply = _clip(snap.last_reply, REPLY_MAX)
+    snap.status_detail = _clip(snap.status_detail, DETAIL_MAX)
+    if snap.status in STATUS_ALIASES:
+        snap.status_detail = snap.status_detail or snap.status
+        snap.status = STATUS_ALIASES[snap.status]
     if snap.status not in STATUSES:
         snap.status = "unknown"
     if send == "minimal":
         for f in CONTENT_FIELDS:
             setattr(snap, f, "")
-        snap.away_summary_at = 0
+        snap.away_summary_at = snap.last_reply_at = 0
     return snap

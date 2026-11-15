@@ -113,6 +113,16 @@ def make_handler(cfg: cfgmod.Config):
 
         def _reply(self, code: int, body: dict):
             data = json.dumps(body, ensure_ascii=False).encode()
+            if self.command == "POST" and not getattr(self, "_body_read", False):
+                # rejected before reading: drain a modest body so the client sees
+                # this reply rather than a TCP reset, then drop the connection
+                self.close_connection = True
+                try:
+                    n = int(self.headers.get("Content-Length") or 0)
+                except ValueError:
+                    n = 0
+                if 0 < n <= 16 * MAX_BODY and not self.headers.get("Transfer-Encoding"):
+                    self.rfile.read(n)
             self.send_response(code)
             origin = self.headers.get("Origin")
             if origin and origin in origins:
@@ -156,6 +166,7 @@ def make_handler(cfg: cfgmod.Config):
             if not 0 < n <= MAX_BODY:
                 return self._reply(413, {"ok": False, "error": "body too large"})
             try:
+                self._body_read = True
                 req = json.loads(self.rfile.read(n))
                 realm, url = str(req["realm"]), str(req["url"])
             except (ValueError, KeyError, TypeError, json.JSONDecodeError):

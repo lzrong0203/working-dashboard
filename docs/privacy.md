@@ -10,12 +10,12 @@ Only the fields of `SessionSnap` (`src/wd/snapshot.py`) are sent:
 | Category | Fields |
 |---|---|
 | Identity | realm, host label, profile label, pid, session_id, name, kind, version |
-| State | status, status_since, updated_at, started_at |
+| State | status, status_since, status_detail (what a waiting session waits for, e.g. "permission prompt"), updated_at, started_at |
 | Location | cwd, git_branch, tmux pane, Remote Control id |
-| Content (clipped) | `ai_title` (120 chars), `away_summary` (600), `last_prompt` (240) |
+| Content (clipped) | `ai_title` (120 chars), `away_summary` (600), `last_prompt` (240), `last_reply` (400: the start of Claude's latest message to you, so the board can show a recap) |
 
-Never sent: message bodies, tool calls and results, file contents,
-environment, credentials.
+Never sent: earlier messages, subagent messages, tool calls and results, file
+contents, environment, credentials.
 
 Set `send = "minimal"` on a realm and the content and location rows are dropped
 too. Run `wd agent --print` at any time to see exactly what would be sent.
