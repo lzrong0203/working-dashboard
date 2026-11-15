@@ -15,6 +15,7 @@ session (CLAUDE_CODE_SESSION_ID) and pick the realm from CLAUDE_CONFIG_DIR.
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 import json
 import os
 import sys
@@ -118,6 +119,12 @@ def build_parser() -> argparse.ArgumentParser:
     st = sub.add_parser("status", parents=[common], help="sessions in the terminal")
     st.add_argument("--all", action="store_true", help="include ended sessions")
 
+    px = sub.add_parser("pixel", help="optional pixel-agents office for all realms").add_subparsers(dest="sub", required=True)
+    pxs = px.add_parser("setup", help="write a one-room-per-machine layout and a launchd job for pixel-agents")
+    pxs.add_argument("--hosts", required=True, help="comma-separated machine labels, one room each, e.g. laptop,home-server,work-mini")
+    pxs.add_argument("--cli", required=True, help="path to pixel-agents' dist/cli.js (npm install pixel-agents)")
+    pxs.add_argument("--node", default="", help="node binary (default: the one on PATH)")
+    pxs.add_argument("--port", type=int, default=3100)
     rs = sub.add_parser("research", help="research records (研究 view)").add_subparsers(dest="sub", required=True)
     rp = rs.add_parser("propose", parents=[common], help="let Claude draft questions + links (runs on the hub, realm's own account)")
     rp.add_argument("name", help="[[hub.research]] name")
@@ -237,6 +244,17 @@ def dispatch(cfg: cfgmod.Config, args) -> int:
         if first and not args.no_open:
             webbrowser.open(f"http://127.0.0.1:{first}")
         return 0 if first else 1
+
+    if args.cmd == "pixel" and args.sub == "setup":
+        import shutil
+
+        from wd import pixel
+
+        node = args.node or shutil.which("node") or "node"
+        for line in pixel.setup(cfg, [h.strip() for h in args.hosts.split(",") if h.strip()], str(Path(args.cli).expanduser().resolve()), node, args.port):
+            print("✓", line)
+        print("then set [view] pixel = true in your config and restart the agent")
+        return 0
 
     if args.cmd == "research" and args.sub == "propose":
         from wd import research_propose

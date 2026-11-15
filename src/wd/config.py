@@ -90,6 +90,9 @@ class View:
     # the agent keeps realms with a view_port forwarded (re-forwarding after a
     # network change), so the board never needs a manual `wd view`
     keep_tunnels: bool = True
+    # optional: replay every realm's sessions into a local pixel-agents office (wd/pixel.py)
+    pixel: bool = False
+    pixel_port: int = 3100
 
 
 @dataclass
@@ -222,6 +225,8 @@ def load(path: str | Path | None = None) -> Config:
         browser_profiles={str(k): str(val) for k, val in (v.get("browser_profiles") or {}).items()},
         browser_labels={str(k): str(val) for k, val in (v.get("browser_labels") or {}).items()},
         keep_tunnels=bool(v.get("keep_tunnels", True)),
+        pixel=bool(v.get("pixel", False)),
+        pixel_port=int(v.get("pixel_port", 3100)),
     )
 
     return Config(

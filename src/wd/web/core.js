@@ -107,14 +107,15 @@ export function strip(s, now = Date.now(), hours = 12) {
 
 // Optional helper on the viewing machine that opens claude.ai links in the
 // browser profile configured for each realm (see wd/opener.py).
-export const opener = { base: `http://127.0.0.1:${lsGet("wd.opener_port") || 8739}`, realms: null };
+export const opener = { base: `http://127.0.0.1:${lsGet("wd.opener_port") || 8739}`, realms: null, pixel: "" };
 
 export async function probeOpener() {
   try {
     const r = await fetch(`${opener.base}/config`);
     const j = await r.json();
     opener.realms = j.ok ? j.realms : null;
-  } catch { opener.realms = null; }
+    opener.pixel = j.ok && /^http:\/\/127\.0\.0\.1:\d+\/$/.test(j.pixel || "") ? j.pixel : "";
+  } catch { opener.realms = null; opener.pixel = ""; }
   return opener.realms;
 }
 

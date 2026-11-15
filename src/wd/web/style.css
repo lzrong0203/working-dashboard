@@ -585,3 +585,7 @@ tr.st-superseded { opacity: .55; }
 .rrbar { display: flex; gap: .4rem; margin: .4rem 0; }
 .rrbar button { font: inherit; font-size: .82rem; padding: .3rem .8rem; border-radius: 999px; border: var(--border); background: var(--panel); color: var(--ink); cursor: pointer; }
 .rrbar button:hover { border-color: var(--accent); }
+.pxframe { display: flex; flex-direction: column; gap: .5rem; }
+.pxframe iframe { width: 100%; height: min(78vh, 760px); border: 0; border-radius: var(--radius); background: #1e1e2e; }
+.pxnote { margin: 0; font-size: .8rem; color: var(--muted); }
+:root[data-look="office"] .pxnote { color: #cfcbe0; } :root[data-look="office"] .pxnote a { color: #fab005; }

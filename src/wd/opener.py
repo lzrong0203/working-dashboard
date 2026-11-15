@@ -154,7 +154,8 @@ def make_handler(cfg: cfgmod.Config):
                 return self._reply(404, {"ok": False})
             names = chrome_profile_names()
             realms = {r: {"profile": d, "label": view.browser_labels.get(r) or names.get(d, d)} for r, d in view.browser_profiles.items()}
-            return self._reply(200, {"ok": True, "realms": realms})
+            pixel = f"http://127.0.0.1:{int(view.pixel_port)}/" if view.pixel else ""
+            return self._reply(200, {"ok": True, "realms": realms, "pixel": pixel})
 
         def do_POST(self):
             if not self._origin_ok() or self.headers.get("X-WD-Open") != "1":

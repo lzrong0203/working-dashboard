@@ -62,6 +62,12 @@ def run(cfg: cfgmod.Config, once: bool = False, print_only: bool = False) -> int
             from wd.transport import keep_views
 
             threading.Thread(target=keep_views, args=(cfg,), name="wd-views", daemon=True).start()
+        if cfg.view.pixel:
+            import threading
+
+            from wd.pixel import run_bridge
+
+            threading.Thread(target=run_bridge, args=(cfg,), name="wd-pixel", daemon=True).start()
     collectors: dict[str, ClaudeCollector] = {}
     last_digest: dict[str, str] = {}
     last_sent: dict[str, float] = {}

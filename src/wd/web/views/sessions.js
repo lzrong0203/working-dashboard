@@ -238,6 +238,26 @@ function renderKanban(ctx) {
     </section>`).join("")}</div>${goneBlock(ctx)}`;
 }
 
+// pixel-agents' office (one room per machine), fed by the agent's bridge
+// (wd/pixel.py). The frame is kept across board updates; it reloads only when
+// sessions come or go, so new people get their room's seat mapping.
+let pixelSig = "";
+function mountPixel(el, ctx, banner) {
+  const sig = ctx.live.map((s) => s.key).sort().join("|");
+  let frame = el.querySelector(":scope > .pxframe iframe");
+  if (!frame || frame.dataset.src !== opener.pixel) {
+    el.innerHTML = `<div class="pxframe"><div class="pxbanner"></div>
+      <p class="pxnote">由 <a href="https://github.com/pixel-agents-hq/pixel-agents" target="_blank" rel="noopener">pixel-agents</a> 繪製（僅檢視）。一個隔間是一台機器；點人物看狀態。<a href="${esc(opener.pixel)}" target="_blank" rel="noopener">在新分頁開啟</a></p>
+      <iframe title="辦公室" data-src="${esc(opener.pixel)}" src="${esc(opener.pixel)}"></iframe></div>`;
+    frame = el.querySelector(".pxframe iframe");
+    pixelSig = sig;
+  } else if (sig !== pixelSig) {
+    pixelSig = sig;
+    setTimeout(() => { frame.src = frame.dataset.src; }, 7000);  // after the bridge has written seat mappings
+  }
+  el.querySelector(".pxframe .pxbanner").innerHTML = banner;
+}
+
 WD.register({
   id: "sessions",
   label: "Sessions",
@@ -253,6 +273,10 @@ WD.register({
       hosts: [...new Set([...m.sources.map((s) => s.host), ...live.map((s) => s.host)])].sort(),
     };
     const banner = m.offline.length ? `<p class="banner">暫時連不上 ${m.offline.map((s) => esc(s.state?.realm || s.url.replace(/^https?:\/\//, ""))).join("、")}，自動重試中（換網路後通道約 1 分鐘內會自己接回；一直沒好再執行 <code>wd view</code>）</p>` : "";
+    if (WD.look === "office" && opener.pixel) {
+      mountPixel(el, ctx, banner);
+      return;
+    }
     if (WD.look === "office") {
       mountOffice(el, ctx, { card, hostHeader, nameOf, banner });
       return;
