@@ -516,12 +516,13 @@ class RecapTest(unittest.TestCase):
             rows = [
                 {"type": "assistant", "timestamp": "2026-11-15T10:00:00Z", "message": {"content": [{"type": "text", "text": "第一段"}]}},
                 {"type": "assistant", "isSidechain": True, "message": {"content": [{"type": "text", "text": "subagent chatter"}]}},
-                {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash"}]}},
+                {"type": "assistant", "timestamp": "2026-11-15T10:01:00Z", "message": {"content": [{"type": "tool_use", "name": "Bash"}]}},
                 {"type": "assistant", "timestamp": "2026-11-15T10:05:00Z", "message": {"content": [{"type": "text", "text": "做完了：三件事"}]}},
             ]
             p.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
             st = TranscriptTail(p).update()
             self.assertEqual(st.last_reply, "做完了：三件事")
+            self.assertEqual(st.activity, "run")  # the Bash call; the later text doesn't reset it
             self.assertGreater(st.last_reply_at, 0)
         snap = redact(SessionSnap("r", "h", "p", 1, SID, status="shell", last_reply="x" * 900))
         self.assertEqual((snap.status, snap.status_detail), ("busy", "shell"))

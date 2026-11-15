@@ -80,7 +80,7 @@ for (const look of ["desk", "studio", "flap", "kanban", "office"]) {
   if (!html.includes("n1") && !html.includes(">n<")) fail(`${look}: waiting session missing`);
   if (!html.includes("n9") && !html.includes(">9<")) fail(`${look}: work session missing`);
   if (look === "studio" && !html.includes('class="scene"')) fail("studio: no pixel scene");
-  if (look === "office" && !html.includes("odesk-art")) fail("office: no desks");
+  if (look === "office" && !html.includes("pxname")) fail("office: no people");
   if (look === "flap" && !html.includes("DEPARTURES")) fail("flap: no board");
   if (look === "kanban" && !html.includes('class="cork"')) fail("kanban: no cork board");
   if ((look === "desk" || look === "studio") && !html.includes('class="strip"')) fail(`${look}: no status strip`);

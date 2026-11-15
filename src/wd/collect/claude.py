@@ -31,6 +31,20 @@ FIRST_READ_BYTES = 4 * 1024 * 1024
 MAX_CATCHUP_BYTES = 8 * 1024 * 1024
 
 
+# Tool name -> what the person at the desk is doing (no arguments, no content).
+ACTIVITY = {
+    **dict.fromkeys(("Edit", "Write", "MultiEdit", "NotebookEdit"), "edit"),
+    **dict.fromkeys(("Read", "Grep", "Glob", "LS", "WebFetch", "WebSearch", "ToolSearch"), "read"),
+    **dict.fromkeys(("Bash", "BashOutput", "Monitor", "KillShell", "TaskStop"), "run"),
+    **dict.fromkeys(("Task", "Agent", "SendMessage", "Workflow"), "delegate"),
+    **dict.fromkeys(("TodoWrite", "EnterPlanMode", "ExitPlanMode"), "plan"),
+}
+
+
+def activity_of(name: str) -> str:
+    return ACTIVITY.get(name, "tool" if name else "")
+
+
 def _first_ts(f) -> int:
     """Timestamp of the first record that has one (reads at most 256 KB)."""
     pos = f.tell()
@@ -80,6 +94,8 @@ class TailState:
     last_reply_at: int = 0
     git_branch: str = ""
     ai_title_at: int = 0  # when this title was (probably) written; Claude Code never refreshes it
+    activity: str = ""  # what the last tool call was for: edit | read | run | delegate | plan | tool
+    activity_at: int = 0
     first_ts: int = 0  # first timestamp in the transcript
     last_ts: int = 0  # latest timestamp seen while reading
 
@@ -130,7 +146,7 @@ class TranscriptTail:
 
     def _absorb(self, line: bytes) -> None:
         # cheap prefilter: only parse the few record types we care about
-        reply = b'"assistant"' in line and b'"text"' in line
+        reply = b'"assistant"' in line and (b'"text"' in line or b'"tool_use"' in line)
         if not (reply or b'"ai-title"' in line or b'"last-prompt"' in line or b"away_summary" in line or b'"gitBranch"' in line):
             return
         try:
@@ -156,7 +172,12 @@ class TranscriptTail:
             st.away_summary_at = _iso_ms(d.get("timestamp", ""))
         elif t == "assistant" and not d.get("isSidechain"):
             parts = (d.get("message") or {}).get("content")
-            text = "\n".join(x.get("text", "") for x in parts if isinstance(x, dict) and x.get("type") == "text") if isinstance(parts, list) else ""
+            parts = parts if isinstance(parts, list) else []
+            tools = [x.get("name", "") for x in parts if isinstance(x, dict) and x.get("type") == "tool_use"]
+            if tools:
+                st.activity = activity_of(str(tools[-1]))
+                st.activity_at = _iso_ms(d.get("timestamp", "")) or st.last_ts
+            text = "\n".join(x.get("text", "") for x in parts if isinstance(x, dict) and x.get("type") == "text")
             if text.strip():
                 st.last_reply = text.strip()[:2000]
                 st.last_reply_at = _iso_ms(d.get("timestamp", ""))
@@ -278,6 +299,8 @@ class ClaudeCollector:
                     git_branch=t.git_branch if t else "",
                     ai_title=t.ai_title if t else "",
                     ai_title_at=t.ai_title_at if t else 0,
+                    activity=t.activity if t else "",
+                    activity_at=t.activity_at if t else 0,
                     away_summary=t.away_summary if t else "",
                     away_summary_at=t.away_summary_at if t else 0,
                     last_prompt=t.last_prompt if t else "",

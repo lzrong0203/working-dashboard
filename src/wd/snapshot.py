@@ -38,6 +38,8 @@ class SessionSnap:
     status: str = "unknown"
     status_since: int = 0  # epoch ms
     status_detail: str = ""  # e.g. what a waiting session waits for ("permission prompt")
+    activity: str = ""  # category of the last tool call (edit/read/run/delegate/plan/tool); never its arguments
+    activity_at: int = 0  # epoch ms
     updated_at: int = 0  # epoch ms
     started_at: int = 0  # epoch ms
     version: str = ""
@@ -83,6 +85,7 @@ def redact(snap: SessionSnap, send: str = "full") -> SessionSnap:
     snap.last_prompt = _clip(snap.last_prompt, PROMPT_MAX)
     snap.last_reply = _clip(snap.last_reply, REPLY_MAX)
     snap.status_detail = _clip(snap.status_detail, DETAIL_MAX)
+    snap.activity = snap.activity if snap.activity in ("edit", "read", "run", "delegate", "plan", "tool") else ""
     if snap.status in STATUS_ALIASES:
         snap.status_detail = snap.status_detail or snap.status
         snap.status = STATUS_ALIASES[snap.status]

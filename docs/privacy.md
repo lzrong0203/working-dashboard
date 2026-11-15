@@ -10,7 +10,7 @@ Only the fields of `SessionSnap` (`src/wd/snapshot.py`) are sent:
 | Category | Fields |
 |---|---|
 | Identity | realm, host label, profile label, pid, session_id, name, kind, version |
-| State | status, status_since, status_detail (what a waiting session waits for, e.g. "permission prompt"), updated_at, started_at |
+| State | status, status_since, activity (category of the last tool call: edit / read / run / delegate / plan — never its arguments), status_detail (what a waiting session waits for, e.g. "permission prompt"), updated_at, started_at |
 | Location | cwd, git_branch, tmux pane, Remote Control id |
 | Content (clipped) | `ai_title` (120 chars), `away_summary` (600), `last_prompt` (240), `last_reply` (400: the start of Claude's latest message to you, so the board can show a recap) |
 
