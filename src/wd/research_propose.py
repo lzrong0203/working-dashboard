@@ -563,9 +563,14 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
                                           "so_what": _flat(x.get("so_what"), 200), "findings": fids, "cites": cites, "confidence": conf,
                                           "warnings": checks(text, [{"id": c, "role": "supports"} for c in cites], enriched, raw_text, forbidden)
                                           + ([] if fids else ["沒有對應的結論，不應放進報告"])})
-            qids = {q["id"] for q in overlay["questions"]}
-            report["routes"] = [{k: _flat(x.get(k), 160) for k in ("question", "plain", "status", "stuck")}
-                                for x in md.get("routes", []) if isinstance(x, dict) and x.get("question") in qids]
+            def qmatch(v):  # the model may answer with a title instead of an id
+                v = str(v or "")
+                for q in overlay["questions"]:
+                    if v == q["id"] or (v and (v in q["title"] or q["title"] in v)):
+                        return q["id"]
+                return ""
+            report["routes"] = [{"question": qmatch(x.get("question")), **{k: _flat(x.get(k), 160) for k in ("plain", "status", "stuck")}}
+                                for x in md.get("routes", []) if isinstance(x, dict)][:8]
             for x in md.get("unknowns", [])[:3]:
                 fids, cites, _ = from_findings(x.get("findings", []))
                 report["unknowns"].append({"item": _flat(x.get("item"), 200), "change_if": _flat(x.get("change_if"), 200), "cites": cites})
@@ -574,7 +579,7 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
             report["next_weeks"] = [{k: _flat(x.get(k), 200) for k in ("task", "learn")} for x in md.get("next_weeks", []) if isinstance(x, dict)][:5]
             report["glossary"] = [{k: _flat(x.get(k), 160) for k in ("term", "plain")} for x in md.get("glossary", []) if isinstance(x, dict)][:10]
             report["cutoff"] = max((recs[i]["ts"] for i in ids), default="")[:10]
-            report["fingerprint"] = data["fp"]
+            report["fingerprint"] = data.get("records_fp") or proj.records_fingerprint()
             report["generated"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
             report["model"] = synth
             report["status"] = "draft"

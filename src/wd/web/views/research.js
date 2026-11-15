@@ -287,7 +287,7 @@ function statusBoard(d, D) {
     }).join("");
     return `<section class="goal${g.id === "g-cross" ? " cross" : ""}"><header><h2>${esc(g.title)}</h2>
       ${g.bar ? `<p class="bar"><b>怎樣算成功</b>${esc(g.bar)}</p>` : ""}${g.answer ? `<p class="bar"><b>現在的答案</b>${esc(g.answer)} ${citeChips(g.answer_cites, D)}</p>` : ""}</header>
-      <table class="board"><thead><tr><th>途徑／問題</th><th>現在的答案</th><th title="①只有想法 ②模擬對模擬 ③對公開實測 ④對自有／供應方實測 ⑤目標條件實測確認">證據階梯</th><th>卡在哪</th><th>最近結果</th><th>下一步</th></tr></thead><tbody>${rows}</tbody></table></section>`;
+      <table class="sboard"><thead><tr><th>途徑／問題</th><th>現在的答案</th><th title="①只有想法 ②模擬對模擬 ③對公開實測 ④對自有／供應方實測 ⑤目標條件實測確認">證據階梯</th><th>卡在哪</th><th>最近結果</th><th>下一步</th></tr></thead><tbody>${rows}</tbody></table></section>`;
   }).join("");
   const cutoff = d.records.length ? d.records[d.records.length - 1].ts.slice(0, 10) : "";
   return `<div class="nowgrid"><div>${blocks}</div><aside class="side">
@@ -423,7 +423,7 @@ function meeting(rep, d, D) {
   const op = rep.one_page || {};
   const q = (id) => (d.questions || []).find((x) => x.id === id);
   const html = [], md = [];
-  const stale = rep.fingerprint && rep.fingerprint !== d.fp;
+  const stale = rep.fingerprint && d.records_fp && rep.fingerprint !== d.records_fp;
   html.push(`<header class="mhead"><h2>${esc(rep.title || "研究進度")}</h2><p class="muted">資料截止 ${esc(rep.cutoff || "")}・${esc(rep.status === "draft" ? "草稿，研究者確認前不要對外" : rep.status || "")}${stale ? "・之後有新的登記，這份還沒更新" : ""}</p></header>`);
   md.push(`# ${rep.title || "研究進度"}`, "", `資料截止 ${rep.cutoff || ""}。${rep.status === "draft" ? "草稿，研究者確認前不要對外。" : ""}`, "");
   html.push(`<section><h3>1　一頁結論</h3><dl class="mdl"><dt>目標</dt><dd>${esc(op.goal)}</dd><dt>成功標準</dt><dd>${esc(op.success)}</dd><dt>現在的答案</dt><dd><b>${esc(op.answer)}</b></dd><dt>難在哪</dt><dd>${esc(op.why_hard)}</dd></dl>

@@ -600,15 +600,15 @@ tr.st-superseded { opacity: .55; }
 .nowgrid .side ul { margin: 0; padding-left: 1.1rem; font-size: .82rem; display: flex; flex-direction: column; gap: .35rem; }
 .nowgrid .side li b { display: block; font-size: .76rem; color: var(--muted); }
 .nowgrid .side p { font-size: .76rem; margin: 0; line-height: 1.5; }
-table.board { width: 100%; border-collapse: collapse; font-size: .84rem; table-layout: fixed; }
-table.board th { text-align: left; font-size: .72rem; color: var(--muted); font-weight: 600; padding: .3rem .4rem; border-bottom: 1px solid var(--line); }
-table.board td { padding: .45rem .4rem; border-bottom: 1px solid var(--line); vertical-align: top; }
-table.board th:nth-child(1) { width: 22%; } table.board th:nth-child(2) { width: 32%; } table.board th:nth-child(3) { width: 9%; }
-table.board th:nth-child(4) { width: 12%; } table.board th:nth-child(5) { width: 7%; }
-table.board tr { cursor: pointer; } table.board tbody tr:hover td { background: var(--panel-2); }
-table.board .rt { font-weight: 600; } table.board .ra { line-height: 1.45; }
-table.board .rs, table.board .rn { color: var(--muted); font-size: .78rem; }
-table.board .rd { font-family: var(--font-num); font-size: .78rem; } table.board .rd.stale { color: var(--gone); }
+table.sboard { width: 100%; border-collapse: collapse; font-size: .84rem; table-layout: fixed; }
+table.sboard th { text-align: left; font-size: .72rem; color: var(--muted); font-weight: 600; padding: .3rem .4rem; border-bottom: 1px solid var(--line); }
+table.sboard td { padding: .45rem .4rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.sboard th:nth-child(1) { width: 22%; } table.sboard th:nth-child(2) { width: 32%; } table.sboard th:nth-child(3) { width: 9%; }
+table.sboard th:nth-child(4) { width: 12%; } table.sboard th:nth-child(5) { width: 7%; }
+table.sboard tr { cursor: pointer; } table.sboard tbody tr:hover td { background: var(--panel-2); }
+table.sboard .rt { font-weight: 600; } table.sboard .ra { line-height: 1.45; }
+table.sboard .rs, table.sboard .rn { color: var(--muted); font-size: .78rem; }
+table.sboard .rd { font-family: var(--font-num); font-size: .78rem; } table.sboard .rd.stale { color: var(--gone); }
 .ladder { display: inline-flex; gap: 2px; }
 .lad { width: 10px; height: 12px; border-radius: 2px; }
 .lad.l-pass { background: var(--o-pass); } .lad.l-tried { border: 1.5px solid var(--o-fail); } .lad.l-none { background: var(--line); }
@@ -663,7 +663,7 @@ sup .fn { font: inherit; font-size: .68rem; background: none; border: 0; padding
 .appendix { font-size: .84rem; }
 @media (max-width: 1000px) { .nowgrid { grid-template-columns: minmax(0, 1fr); } .nowgrid .side { position: static; } }
 @media (max-width: 640px) {
-  table.board th:nth-child(4), table.board td:nth-child(4), table.board th:nth-child(6), table.board td:nth-child(6) { display: none; }
-  table.board th:nth-child(1) { width: 30%; } table.board th:nth-child(2) { width: auto; }
+  table.sboard th:nth-child(4), table.sboard td:nth-child(4), table.sboard th:nth-child(6), table.sboard td:nth-child(6) { display: none; }
+  table.sboard th:nth-child(1) { width: 30%; } table.sboard th:nth-child(2) { width: auto; }
   .mdoc { padding: .9rem; } .three .tl { grid-template-columns: minmax(0, 1fr); }
 }

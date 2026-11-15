@@ -282,6 +282,17 @@ class ResearchProject:
             return []
         return sorted(out)[:MAX_FILES]
 
+    def records_fingerprint(self) -> str:
+        """The registry files only (not the overlay or report): what a report snapshot was made from."""
+        h = hashlib.sha1()
+        for p in self._files():
+            try:
+                st = p.stat()
+                h.update(f"{p.name}:{st.st_mtime_ns}:{st.st_size};".encode())
+            except OSError:
+                pass
+        return h.hexdigest()[:16]
+
     def fingerprint(self) -> str:
         h = hashlib.sha1()
         for p in [*self._files(), self.overlay_path, self.overlay_path.with_name(self.overlay_path.stem + ".report.json")]:
@@ -298,6 +309,7 @@ class ResearchProject:
             if fp != self._fp:
                 self._data, self._fp = self._load(), fp
                 self._data["fp"] = fp
+                self._data["records_fp"] = self.records_fingerprint()
             return self._data
 
     def _load(self) -> dict:
