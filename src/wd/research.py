@@ -23,12 +23,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
 MAX_FILE = 4 * 1024 * 1024
+MAX_FILES = 5000
+MAX_TOTAL = 256 * 1024 * 1024
 RID = re.compile(r"REG-\d{8}-[0-9a-f]{4}")
 # family codes such as HUMID-1c, DFT-GATE-1, E8b, S2 (but not REG-... ids)
 CODE = re.compile(r"(?<![A-Za-z0-9])((?!REG-)[A-Z][A-Z0-9]{1,}(?:-[A-Z0-9]+)+[a-z]?|E\d+[a-z]?|S\d)(?![A-Za-z0-9])")
@@ -112,7 +115,8 @@ def _num(v):
     if isinstance(v, (int, float)):
         return float(v)
     m = re.match(r"\s*([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)", str(v or ""))
-    return float(m.group(1)) if m else None
+    x = float(m.group(1)) if m else None
+    return x if x is None or math.isfinite(x) else None
 
 
 def gauge(criterion, result, noise) -> dict | None:
@@ -123,8 +127,12 @@ def gauge(criterion, result, noise) -> dict | None:
     th, val = criterion.get("threshold"), result.get("val")
     if isinstance(th, bool) or isinstance(val, bool) or not isinstance(th, (int, float)) or not isinstance(val, (int, float)):
         return None
+    if not (math.isfinite(th) and math.isfinite(val)):
+        return None
     d = str(criterion.get("direction") or "").lower()
     nf = _num(noise)
+    if nf is not None and not math.isfinite(nf):
+        nf = None
     return {"metric": _flat(criterion.get("metric"), 120), "dir": "down" if d.startswith("down") or d == "lower" else "up",
             "th": float(th), "val": float(val), "noise": abs(nf) if nf is not None else None}
 
@@ -208,20 +216,26 @@ class ResearchProject:
         self.overlay_path = src.overlay or (data_dir / "research" / f"{src.name}.json")
         self._fp = ""
         self._data: dict = {}
+        self._index: dict[str, Path] = {}
         self._lock = threading.Lock()
 
     def _files(self) -> list[Path]:
+        """Regular .json files directly inside the registry dir; symlinks are
+        skipped so a link can't pull in files from elsewhere."""
         try:
-            return sorted(p for p in self.src.path.iterdir() if p.suffix == ".json" and p.is_file())
+            root = self.src.path.resolve()
+            out = [p for p in self.src.path.iterdir()
+                   if p.suffix == ".json" and not p.is_symlink() and p.is_file() and p.resolve().parent == root]
         except OSError:
             return []
+        return sorted(out)[:MAX_FILES]
 
     def fingerprint(self) -> str:
         h = hashlib.sha1()
         for p in [*self._files(), self.overlay_path]:
             try:
                 st = p.stat()
-                h.update(f"{p.name}:{st.st_mtime_ns}:{st.st_size};".encode())
+                h.update(f"{p.name}:{st.st_mtime_ns}:{st.st_ctime_ns}:{st.st_ino}:{st.st_size};".encode())
             except OSError:
                 h.update(f"{p.name}:-;".encode())
         return h.hexdigest()[:16]
@@ -235,11 +249,19 @@ class ResearchProject:
             return self._data
 
     def _load(self) -> dict:
-        records, errors = [], []
-        for p in self._files():
+        records, errors, index, total = [], [], {}, 0
+        files = self._files()
+        if len(files) >= MAX_FILES:
+            errors.append(f"only the first {MAX_FILES} files are read")
+        for p in files:
             try:
-                if p.stat().st_size > MAX_FILE:
+                size = p.stat().st_size
+                if size > MAX_FILE:
                     raise ValueError("file too large")
+                total += size
+                if total > MAX_TOTAL:
+                    errors.append("registry larger than the read budget; the rest is skipped")
+                    break
                 d = json.loads(p.read_text(encoding="utf-8"))
                 if not isinstance(d, dict):
                     raise ValueError("not a JSON object")
@@ -247,12 +269,16 @@ class ResearchProject:
                 if not r["id"]:
                     raise ValueError("no id")
                 records.append(r)
+                index[r["id"]] = p
             except Exception as e:  # one bad record must not hide the rest
                 errors.append(f"{p.name}: {e}")
         records.sort(key=lambda r: (r["ts"], r["id"]))
+        self._index = index
         ids = {r["id"] for r in records}
         questions, edges, goals = [], [], []
         try:
+            if self.overlay_path.stat().st_size > MAX_FILE * 4:
+                raise ValueError("overlay too large")
             ov = json.loads(self.overlay_path.read_text(encoding="utf-8"))
             goals = [{k: _flat(g.get(k), 400) for k in ("id", "title", "bar", "answer", "state")}
                      for g in ov.get("goals", []) if isinstance(g, dict) and g.get("id")]
@@ -289,30 +315,29 @@ class ResearchProject:
         }
 
     def record(self, rid: str) -> dict | None:
-        """One record with long text fields unclipped (for the 更多 button)."""
-        if not RID.fullmatch(rid or "") and not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", rid or ""):
+        """One record with long text fields unclipped (for the 更多 button).
+        Only ids the loader already indexed are served: one exact file read."""
+        self.data()
+        p = self._index.get(rid or "")
+        if not p:
             return None
-        for p in self._files():
-            if p.stem != rid and rid not in p.name:
-                continue
-            try:
-                if p.stat().st_size > MAX_FILE:
-                    return None
-                d = json.loads(p.read_text(encoding="utf-8"))
-            except Exception:
+        try:
+            if p.is_symlink() or p.stat().st_size > MAX_FILE:
                 return None
-            if not isinstance(d, dict) or str(_get(d, self.src.field_names("id")) or "") != rid:
-                continue
-            g = lambda k: _get(d, self.src.field_names(k))  # noqa: E731
-            res = g("result")
-            if isinstance(res, dict):
-                detail = res.get("cv") if isinstance(res.get("cv"), str) else {k: res[k] for k in ("val", "test") if k in res}
-                result = _flat(detail, 20000)
-            else:
-                result = _flat(res, 20000)
-            return {"id": rid, "why": _flat(g("why"), 20000), "hypothesis": _flat(g("hypothesis"), 20000),
-                    "lose": _flat(g("lose"), 20000), "expected": _flat(g("expected"), 20000), "result": result}
-        return None
+            d = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        if not isinstance(d, dict) or str(_get(d, self.src.field_names("id")) or "") != rid:
+            return None
+        g = lambda k: _get(d, self.src.field_names(k))  # noqa: E731
+        res = g("result")
+        if isinstance(res, dict):
+            detail = res.get("cv") if isinstance(res.get("cv"), str) else {k: res[k] for k in ("val", "test") if k in res}
+            result = _flat(detail, 20000)
+        else:
+            result = _flat(res, 20000)
+        return {"id": rid, "why": _flat(g("why"), 20000), "hypothesis": _flat(g("hypothesis"), 20000),
+                "lose": _flat(g("lose"), 20000), "expected": _flat(g("expected"), 20000), "result": result}
 
     def summary(self) -> dict:
         d = self.data()

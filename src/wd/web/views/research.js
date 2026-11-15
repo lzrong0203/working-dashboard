@@ -35,13 +35,20 @@ const badge = (o) => { const [i, t] = OUTCOME[o] || OUTCOME.other; return `<span
 function load(p) {
   const k = `${p.realm}/${p.name}`;
   const c = cache.get(k);
-  if (c && (c.fp === p.fp || c.loading)) return c;
-  const next = { fp: p.fp, data: c?.data || null, loading: true, error: null };
+  if (c && c.loading) return c;
+  if (c && c.fp === p.fp && !c.error) return c;
+  if (c && c.error && Date.now() < c.retryAt) return c;
+  const next = { fp: p.fp, data: c?.data || null, loading: true, error: null, retryAt: 0, tries: (c?.error ? c.tries : 0) + 1 };
   cache.set(k, next);
   fetch(`${p.base.replace(/\/$/, "")}/api/research?name=${encodeURIComponent(p.name)}&fp=${encodeURIComponent(p.fp)}`)
     .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-    .then((d) => { next.data = d; })
-    .catch((e) => { next.error = String(e); })
+    .then((d) => { next.data = d; next.tries = 0; })
+    .catch((e) => {  // retry later (5 s, 10 s, … up to a minute), showing the last good data meanwhile
+      next.error = String(e);
+      const wait = Math.min(60000, 5000 * 2 ** Math.min(4, next.tries - 1));
+      next.retryAt = Date.now() + wait;
+      setTimeout(() => rerender(), wait + 50);
+    })
     .finally(() => { next.loading = false; rerender(); });
   return next;
 }
@@ -421,7 +428,7 @@ function render(el, m) {
   const projects = m.research || [];
   lastProjects = projects;
   if (!projects.length) {
-    paint(el, `<p class="empty">還沒有設定研究來源。在 hub 的設定加 <code>[[hub.research]]</code>（見 docs/architecture.md）。</p>`);
+  paint(el, `<p class="empty">還沒有設定研究來源。在 hub 的設定加 <code>[[hub.research]]</code>（見 docs/architecture.md）。</p>`, "none");
     return;
   }
   const keyOf = (p) => `${p.realm}/${p.name}`;
@@ -439,25 +446,31 @@ function render(el, m) {
   ${d && !d.questions?.length ? `<p class="hint">目前依代號分組，關係只含記錄裡寫明的 REG 編號。等 AI 讀完內文、補上「問題」和關係之後，這裡會改成依問題分組。</p>` : ""}
   ${d?.errors?.length ? `<details class="hint"><summary>${d.errors.length} 筆讀不進來</summary>${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</details>` : ""}`;
   if (!d) {
-    paint(el, head + `<p class="empty">${c.error ? `讀取失敗：${esc(c.error)}` : "讀取中…"}</p>`);
+    paint(el, head + `<p class="empty">${c.error ? `讀取失敗：${esc(c.error)}（稍後自動重試）` : "讀取中…"}</p>`, "");
+    wire(el);
     return;
   }
   const D = derive(d);
+  cur = { d, D };
   const body = ui.mode === "time" ? timeline(d, D) : ui.mode === "cited" ? citedView(d, D) : ui.mode === "map" ? overview(d, D) : ui.mode === "report" ? reportView(d, D, p.label) : topic(d, D);
-  if (paint(el, head + `<div class="research">${body}</div>`)) wire(el, d, D);
+  if (paint(el, head + `<div class="research">${body}</div>`, d.fp)) {
+    globalThis.requestAnimationFrame?.(() => markClamped(el));
+    setTimeout(() => markClamped(el), 50);
+  }
+  wire(el);
 }
 
 // The board re-renders every 15 s and on every hub push. Repainting identical
 // markup would reset scroll positions, open <details> and the search box, so
 // only touch the DOM when the markup really changed (and keep focus if so).
-function paint(el, html) {
+function paint(el, html, key = "") {
   const root = el.querySelector(":scope > [data-rv]");
-  if (root && el._rhtml === html) return false;
+  if (root && el._rhtml === html && el._rkey === key) return false;
   const a = document.activeElement, keep = a && a.id === "rq" ? [a.selectionStart, a.selectionEnd] : null;
   const listScroll = el.querySelector(".rgroups")?.scrollTop || 0;
   const opened = [...el.querySelectorAll("dd.open")].map((dd) => `${dd.closest("[data-id]")?.dataset.id}|${dd.dataset.field || dd.previousElementSibling?.textContent}`);
   el.innerHTML = `<div data-rv="1">${html}</div>`;
-  el._rhtml = html;
+  el._rhtml = html; el._rkey = key;
   if (keep) { const n = document.getElementById("rq"); if (n) { n.focus(); n.setSelectionRange(...keep); } }
   const list = el.querySelector(".rgroups");
   if (list) list.scrollTop = listScroll;
@@ -481,63 +494,80 @@ function markClamped(el) {
 let lastProjects = [];
 const currentProject = () => lastProjects.find((x) => `${x.realm}/${x.name}` === ui.proj) || lastProjects[0];
 
-function wire(el, d, D) {
-  el.querySelector("#rproj")?.addEventListener("change", (ev) => { ui.proj = ev.target.value; lsSet("wd.research.proj", ui.proj); rerender(); });
-  el.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => { ui.mode = b.dataset.mode; lsSet("wd.research.mode", ui.mode); rerender(); }));
-  el.querySelectorAll("[data-group]").forEach((b) => b.addEventListener("click", () => {
-    const fromMap = ui.mode !== "topic";
-    ui.group = b.dataset.group; ui.focus = ""; ui.mode = "topic";
-    lsSet("wd.research.group", ui.group); lsSet("wd.research.mode", ui.mode); rerender();
-    setTimeout(() => {  // show the start of the story only if it is out of view
-      const st = document.querySelector(".rstory");
-      if (fromMap) window.scrollTo({ top: 0 });
-      else if (st && st.getBoundingClientRect().top < 0) st.scrollIntoView({ block: "start" });
-    }, 40);
-  }));
-  const q = el.querySelector("#rq");
-  if (q) {
-    let t;
-    q.addEventListener("input", () => { ui.q = q.value; clearTimeout(t); t = setTimeout(rerender, 250); });
-  }
-  el.querySelector("#rrcopy")?.addEventListener("click", (ev) => {
-    navigator.clipboard?.writeText(el.querySelector("#rrmd").textContent).then(() => { ev.target.textContent = "已複製"; }, () => { ev.target.textContent = "複製失敗，請手動選取"; });
+// One set of delegated listeners per container, attached once. They read the
+// current data (cur) at click time, so a repaint skipped because the markup
+// didn't change can never leave handlers pointing at stale data.
+let cur = { d: null, D: null };
+function wire(el) {
+  if (el._rWired || !el.addEventListener) return;
+  el._rWired = true;
+  const mine = (ev) => ev.target.closest?.("[data-rv]") && el.contains(ev.target);
+  el.addEventListener("change", (ev) => {
+    if (!mine(ev) || ev.target.id !== "rproj") return;
+    ui.proj = ev.target.value; lsSet("wd.research.proj", ui.proj); rerender();
   });
-  el.querySelector("#rrsave")?.addEventListener("click", () => {
-    const blob = new Blob([el.querySelector("#rrmd").textContent], { type: "text/markdown;charset=utf-8" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `research-${new Date().toISOString().slice(0, 10)}.md`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  let qt;
+  el.addEventListener("input", (ev) => {
+    if (!mine(ev) || ev.target.id !== "rq") return;
+    ui.q = ev.target.value; clearTimeout(qt); qt = setTimeout(rerender, 250);
   });
-  globalThis.requestAnimationFrame?.(() => markClamped(el));
-  setTimeout(() => markClamped(el), 50);
-  el.querySelectorAll("button.more").forEach((b) => b.addEventListener("click", async (ev) => {
-    ev.stopPropagation();
-    const dd = b.closest("dd"), txt = dd.querySelector(".txt");
-    if (dd.classList.toggle("open")) {
-      b.textContent = "收合";
-      const field = dd.dataset.field, id = dd.closest("[data-id]")?.dataset.id;
-      if (field && txt.textContent.endsWith("…") && id) {
-        try {
-          const p = currentProject();
-          const r = await fetch(`${p.base.replace(/\/$/, "")}/api/research?name=${encodeURIComponent(p.name)}&id=${encodeURIComponent(id)}`);
-          const full = r.ok ? (await r.json())[field] : "";
-          if (full) txt.textContent = full;
-        } catch { /* keep the clipped text */ }
-      }
-    } else b.textContent = "更多";
-  }));
-  // any record reference jumps to its story and highlights it
-  el.querySelectorAll("[data-rid]").forEach((b) => b.addEventListener("click", (ev) => {
-    if (ev.target.closest("summary")) return;
-    const id = b.dataset.rid, r = D.byId.get(id);
-    if (!r) return;
-    ui.mode = "topic"; ui.group = D.groupOf(r); ui.focus = id;
-    lsSet("wd.research.mode", ui.mode); lsSet("wd.research.group", ui.group);
-    rerender();
-    setTimeout(() => document.getElementById(`r-${id}`)?.scrollIntoView({ block: "center", behavior: "smooth" }), 60);
-  }));
+  el.addEventListener("click", async (ev) => {
+    if (!mine(ev)) return;
+    const t = ev.target;
+    const mode = t.closest("[data-mode]");
+    if (mode) { ui.mode = mode.dataset.mode; lsSet("wd.research.mode", ui.mode); rerender(); return; }
+    if (t.closest("#rrcopy")) {
+      navigator.clipboard?.writeText(el.querySelector("#rrmd").textContent).then(() => { t.textContent = "已複製"; }, () => { t.textContent = "複製失敗，請手動選取"; });
+      return;
+    }
+    if (t.closest("#rrsave")) {
+      const blob = new Blob([el.querySelector("#rrmd").textContent], { type: "text/markdown;charset=utf-8" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `research-${new Date().toISOString().slice(0, 10)}.md`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      return;
+    }
+    const more = t.closest("button.more");
+    if (more) {
+      ev.stopPropagation();
+      const dd = more.closest("dd"), txt = dd.querySelector(".txt");
+      if (dd.classList.toggle("open")) {
+        more.textContent = "收合";
+        const field = dd.dataset.field, id = dd.closest("[data-id]")?.dataset.id, p = currentProject();
+        if (field && txt.textContent.endsWith("…") && id && p) {
+          try {
+            const r = await fetch(`${p.base.replace(/\/$/, "")}/api/research?name=${encodeURIComponent(p.name)}&id=${encodeURIComponent(id)}`);
+            const full = r.ok ? (await r.json())[field] : "";
+            if (full) txt.textContent = full;
+          } catch { /* keep the clipped text */ }
+        }
+      } else more.textContent = "更多";
+      return;
+    }
+    const grp = t.closest("[data-group]");
+    if (grp) {
+      const fromMap = ui.mode !== "topic";
+      ui.group = grp.dataset.group; ui.focus = ""; ui.mode = "topic";
+      lsSet("wd.research.group", ui.group); lsSet("wd.research.mode", ui.mode); rerender();
+      setTimeout(() => {  // show the start of the story only if it is out of view
+        const story = document.querySelector(".rstory");
+        if (fromMap) window.scrollTo({ top: 0 });
+        else if (story && story.getBoundingClientRect().top < 0) story.scrollIntoView({ block: "start" });
+      }, 40);
+      return;
+    }
+    const ref = t.closest("[data-rid]");
+    if (ref && !t.closest("summary") && cur.D) {  // any record reference jumps to its story
+      const id = ref.dataset.rid, r = cur.D.byId.get(id);
+      if (!r) return;
+      ui.mode = "topic"; ui.group = cur.D.groupOf(r); ui.focus = id;
+      lsSet("wd.research.mode", ui.mode); lsSet("wd.research.group", ui.group);
+      rerender();
+      setTimeout(() => document.getElementById(`r-${id}`)?.scrollIntoView({ block: "center", behavior: "smooth" }), 60);
+    }
+  });
 }
 
 WD.register({ id: "research", label: "研究", render, visible: (m) => (m.research || []).length > 0 });

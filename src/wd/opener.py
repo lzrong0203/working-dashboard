@@ -121,8 +121,12 @@ def make_handler(cfg: cfgmod.Config):
                     n = int(self.headers.get("Content-Length") or 0)
                 except ValueError:
                     n = 0
-                if 0 < n <= 16 * MAX_BODY and not self.headers.get("Transfer-Encoding"):
-                    self.rfile.read(n)
+                if 0 < n <= 16 * MAX_BODY and not self.headers.get("Transfer-Encoding") and not self.headers.get("Expect"):
+                    try:  # best effort, never wait long for a body we are refusing
+                        self.connection.settimeout(1.0)
+                        self.rfile.read(n)
+                    except OSError:
+                        pass
             self.send_response(code)
             origin = self.headers.get("Origin")
             if origin and origin in origins:

@@ -81,8 +81,8 @@ def attention(s: dict, now_ms: int, source_age_s: float) -> tuple[int, str]:
         # either seen or parked, and a board full of old idles is just noise.
         # Idle since launch means nothing has run yet: nothing to read.
         started = int(s.get("started_at") or 0)
-        if started and int(s.get("status_since") or 0) - started < 60_000:
-            return OK, ""
+        if started and int(s.get("status_since") or 0) - started < 60_000 and not s.get("last_reply_at"):
+            return OK, ""  # idle since launch and Claude hasn't said anything: nothing ran yet
         if mins < FRESH_DONE_MIN:
             return SOON, f"剛做完（{_span(mins)}前）"
         if mins < PARKED_IDLE_H * 60:

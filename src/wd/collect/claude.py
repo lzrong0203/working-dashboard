@@ -53,8 +53,9 @@ def _first_ts(f) -> int:
         for line in f.read(256 * 1024).splitlines():
             if b'"timestamp"' in line:
                 try:
-                    ms = _iso_ms(json.loads(line).get("timestamp", ""))
-                except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+                    rec = json.loads(line)
+                    ms = _iso_ms(rec.get("timestamp", "")) if isinstance(rec, dict) else 0
+                except (ValueError, AttributeError, RecursionError, TypeError):
                     continue
                 if ms:
                     return ms
@@ -63,10 +64,10 @@ def _first_ts(f) -> int:
         f.seek(pos)
 
 
-def _iso_ms(ts: str) -> int:
+def _iso_ms(ts) -> int:
     try:
-        return int(datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp() * 1000)
-    except (ValueError, AttributeError):
+        return int(datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp() * 1000)
+    except (ValueError, AttributeError, TypeError, OverflowError):
         return 0
 
 
@@ -141,7 +142,10 @@ class TranscriptTail:
         leftover = len(chunk) - (end + 1)  # bytes of the unterminated last line
         st.offset = size - leftover  # chunk always ends at `size`
         for line in consumed.splitlines():
-            self._absorb(line)
+            try:
+                self._absorb(line)
+            except Exception:  # one malformed record must never stop collection
+                continue
         return st
 
     def _absorb(self, line: bytes) -> None:
@@ -151,7 +155,9 @@ class TranscriptTail:
             return
         try:
             d = json.loads(line)
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
+            return
+        if not isinstance(d, dict):
             return
         t = d.get("type")
         st = self.state
@@ -171,13 +177,14 @@ class TranscriptTail:
             st.away_summary = str(d["content"])
             st.away_summary_at = _iso_ms(d.get("timestamp", ""))
         elif t == "assistant" and not d.get("isSidechain"):
-            parts = (d.get("message") or {}).get("content")
+            msg = d.get("message")
+            parts = msg.get("content") if isinstance(msg, dict) else None
             parts = parts if isinstance(parts, list) else []
-            tools = [x.get("name", "") for x in parts if isinstance(x, dict) and x.get("type") == "tool_use"]
+            tools = [x.get("name") for x in parts if isinstance(x, dict) and x.get("type") == "tool_use" and isinstance(x.get("name"), str)]
             if tools:
                 st.activity = activity_of(str(tools[-1]))
                 st.activity_at = _iso_ms(d.get("timestamp", "")) or st.last_ts
-            text = "\n".join(x.get("text", "") for x in parts if isinstance(x, dict) and x.get("type") == "text")
+            text = "\n".join(x["text"] for x in parts if isinstance(x, dict) and x.get("type") == "text" and isinstance(x.get("text"), str))
             if text.strip():
                 st.last_reply = text.strip()[:2000]
                 st.last_reply_at = _iso_ms(d.get("timestamp", ""))
@@ -268,7 +275,10 @@ class ClaudeCollector:
             if not hits:
                 return None
             tail = self._tails[session_id] = TranscriptTail(hits[0])
-        return tail.update()
+        try:
+            return tail.update()
+        except Exception:  # an unreadable transcript costs that session its summary, nothing more
+            return tail.state
 
     def collect(self) -> list[SessionSnap]:
         snaps = []

@@ -188,7 +188,7 @@ def make_handler(board: Board):
                     if not rec:
                         self.send_error(404, "no such record")
                         return
-                    body = json.dumps(rec, ensure_ascii=False).encode()
+                    body = json.dumps(rec, ensure_ascii=False, allow_nan=False).encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json; charset=utf-8")
                     self.send_header("Cache-Control", "no-cache")
@@ -203,7 +203,7 @@ def make_handler(board: Board):
                     self._cors()
                     self.end_headers()
                     return
-                body = json.dumps(d, ensure_ascii=False).encode()
+                body = json.dumps(d, ensure_ascii=False, allow_nan=False).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Cache-Control", "no-cache")

@@ -17,6 +17,7 @@ after every batch, so the board fills in while it runs.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -26,7 +27,9 @@ import tempfile
 import time
 from pathlib import Path
 
-from wd.research import ResearchProject, ResearchSource, _flat, _get
+from datetime import datetime, timezone
+
+from wd.research import MAX_FILE, ResearchProject, ResearchSource, _flat, _get
 
 LINK_TYPES = ("because", "follows", "readjudicates", "supersedes", "corrects", "uses")
 
@@ -152,6 +155,34 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", "", s or "")
 
 
+_PUNCT = re.compile(r"[\W_]+", re.UNICODE)
+
+
+def quote_supported(quote: str, text_norm: str) -> bool:
+    """True when the quote really appears in the record. A quote the model
+    shortened with … must have every remaining piece present, and the pieces
+    must carry real words (at least 6 non-punctuation characters overall)."""
+    q = _norm(quote).strip("…")
+    pieces = [x for x in q.split("…") if x]
+    if not pieces or len(_PUNCT.sub("", "".join(pieces))) < 6:
+        return False
+    return all(len(_PUNCT.sub("", x)) >= 2 and x in text_norm for x in pieces)
+
+
+def _instant(ts: str):
+    try:
+        t = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+def older(a: str, b: str) -> bool:
+    """Is timestamp a strictly earlier than b? Compares instants, not strings."""
+    ta, tb = _instant(a), _instant(b)
+    return ta < tb if ta and tb else str(a) < str(b)
+
+
 def call_claude(prompt: str, schema: dict, config_dir: Path, model: str, timeout: int = 900) -> dict:
     exe = os.environ.get("WD_CLAUDE") or str(Path.home() / ".local/bin/claude")
     cmd = [exe, "-p", "--model", model, "--no-session-persistence", "--tools", "", "--strict-mcp-config",
@@ -178,6 +209,8 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
     raw = {}
     for p in sorted(src.path.glob("*.json")):
         try:
+            if p.is_symlink() or p.stat().st_size > MAX_FILE:
+                continue
             d = json.loads(p.read_text(encoding="utf-8"))
             raw[str(_get(d, src.field_names("id")) or "")] = d
         except Exception:
@@ -200,9 +233,14 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
 
     def write(ov: dict) -> None:
         ov = {**ov, "generated": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "model": model}
-        tmp = out_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(ov, ensure_ascii=False, indent=1), encoding="utf-8")
-        os.replace(tmp, out_path)
+        fd, tmp = tempfile.mkstemp(dir=out_path.parent, prefix=f".{out_path.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(ov, f, ensure_ascii=False, indent=1)
+            os.replace(tmp, out_path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
 
     ctx = ""
     if context and context.is_file():
@@ -210,22 +248,31 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
     struct = ""
     if structure and structure.is_file():
         struct = "\n既有的路線整理（同事整理，不一定對）：\n" + structure.read_text(encoding="utf-8", errors="replace")[:12000] + "\n"
+    lock = open(out_path.with_name(f".{out_path.name}.lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise RuntimeError("another `wd research propose` is already writing this overlay") from None
     log(f"[propose] {len(ids)} records; pass 1: goals and questions")
     qd = call_claude(Q_PROMPT.format(context=ctx, structure=struct, index=index), Q_SCHEMA, config_dir, model)
     goals = []
-    for g in qd.get("goals", []):
-        if re.fullmatch(r"g-[a-z0-9-]{2,40}", str(g.get("id", ""))) and not any(x["id"] == g["id"] for x in goals):
+    for g in qd.get("goals", []) if isinstance(qd.get("goals"), list) else []:
+        if isinstance(g, dict) and re.fullmatch(r"g-[a-z0-9-]{2,40}", str(g.get("id", ""))) and not any(x["id"] == g["id"] for x in goals):
             goals.append({k: _flat(g.get(k), 400) for k in ("id", "title", "bar", "answer", "state")} | {"by": "ai"})
     gids = {g["id"] for g in goals}
+    if not isinstance(qd, dict) or not isinstance(qd.get("questions"), list) or not qd["questions"]:
+        raise RuntimeError("pass 1 returned no questions; the existing overlay is left as it was")
     questions, member_of = [], {}
     for q in qd.get("questions", []):
+        if not isinstance(q, dict):
+            continue
         if not re.fullmatch(r"q-[a-z0-9-]{2,40}", str(q.get("id", ""))) or any(x["id"] == q["id"] for x in questions):
             continue
         entry = {k: _flat(q.get(k), 400) for k in ("id", "title", "answer", "state", "kind")} | {"by": "ai"}
         entry["parent"] = q.get("parent") if q.get("parent") in gids else ""
         questions.append(entry)
-        for m in q.get("members", []):
-            if m in by:
+        for m in q.get("members", []) if isinstance(q.get("members"), list) else []:
+            if isinstance(m, str) and m in by:
                 member_of.setdefault(m, q["id"])
     qids = {q["id"] for q in questions}
     overlay = {"goals": goals, "questions": questions, "records": {i: {"question": member_of.get(i, "")} for i in ids},
@@ -233,6 +280,7 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
     write(overlay)
     log(f"[propose] {len(goals)} goals, {len(questions)} questions")
     if only_questions:
+        lock.close()
         return out_path
 
     qtext = "\n".join(f"{q['id']}：{q['title']}" for q in questions)
@@ -246,31 +294,42 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
         except Exception as e:  # one bad batch shouldn't lose the others
             log(f"[propose] batch {n // batch + 1}: {e}")
             continue
-        for r in rd.get("records", []):
-            i = r.get("id")
-            if i not in chunk:
-                continue
-            text = _norm(json.dumps(raw[i], ensure_ascii=False))
-            entry = overlay["records"].setdefault(i, {})
-            q = r.get("question") or entry.get("question", "")
-            entry.update({"question": q if q in qids else entry.get("question", ""),
-                          "why": _flat(r.get("why"), 200), "result": _flat(r.get("result"), 200)})
-            for e in r.get("edges", []):
-                to = str(e.get("to", ""))
-                to = to if to in by else code_to_id.get(to, "")
-                quote = _flat(e.get("quote"), 300)
-                if not to or to == i or e.get("type") not in LINK_TYPES or by[to]["ts"] > by[i]["ts"]:
-                    dropped += 1
+        recs = rd.get("records") if isinstance(rd, dict) else None
+        if not isinstance(recs, list):
+            log(f"[propose] batch {n // batch + 1}: malformed reply, skipped")
+            continue
+        for r in recs:
+            try:
+                i = r.get("id") if isinstance(r, dict) else None
+                if i not in chunk:
                     continue
-                if len(_norm(quote)) < 4 or _norm(quote).replace("…", "") not in text:
-                    dropped += 1  # no verbatim support in the record itself
-                    continue
-                if any(x["from"] == i and x["to"] == to for x in overlay["edges"]):
-                    continue
-                overlay["edges"].append({"from": i, "to": to, "type": e["type"], "quote": quote, "by": "ai"})
-                kept += 1
+                text = _norm(json.dumps(raw[i], ensure_ascii=False))
+                entry = overlay["records"].setdefault(i, {})
+                q = r.get("question") or entry.get("question", "")
+                entry.update({"question": q if q in qids else entry.get("question", ""),
+                              "why": _flat(r.get("why"), 200), "result": _flat(r.get("result"), 200)})
+                for e in r.get("edges", []) if isinstance(r.get("edges"), list) else []:
+                    if not isinstance(e, dict):
+                        dropped += 1
+                        continue
+                    to = str(e.get("to", ""))
+                    to = to if to in by else code_to_id.get(to, "")
+                    quote = _flat(e.get("quote"), 300)
+                    if not to or to == i or e.get("type") not in LINK_TYPES or not older(by[to]["ts"], by[i]["ts"]):
+                        dropped += 1
+                        continue
+                    if not quote_supported(quote, text):
+                        dropped += 1  # no verbatim support in the record itself
+                        continue
+                    if any(x["from"] == i and x["to"] == to for x in overlay["edges"]):
+                        continue
+                    overlay["edges"].append({"from": i, "to": to, "type": e["type"], "quote": quote, "by": "ai"})
+                    kept += 1
+            except Exception as ex:  # one odd record shouldn't sink the batch
+                log(f"[propose] record skipped: {ex!r}")
         write(overlay)
         log(f"[propose] batch {n // batch + 1}/{(len(ids) + batch - 1) // batch}: links kept {kept}, dropped {dropped}")
+    lock.close()
     return out_path
 
 

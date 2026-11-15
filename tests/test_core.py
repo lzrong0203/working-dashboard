@@ -625,3 +625,48 @@ class ResearchTest(unittest.TestCase):
             self.assertEqual((ov["goals"][0]["id"], ov["questions"][0]["parent"]), ("g-method", "g-method"))
             self.assertEqual(ov["records"][b["id"]]["why"], "修 FOO-1")
             self.assertEqual([(e["from"], e["to"], e["type"]) for e in ov["edges"]], [(b["id"], a["id"], "because")])
+
+
+class ReviewFixesTest(unittest.TestCase):
+    def test_research_guards(self):
+        from wd.research import ResearchProject, ResearchSource, gauge
+        with tempfile.TemporaryDirectory() as d:
+            reg, outside = Path(d) / "registry", Path(d) / "outside.json"
+            reg.mkdir()
+            (reg / "REG-20260101-aaaa.json").write_text(json.dumps({"id": "REG-20260101-aaaa", "ts": "2026-01-01"}))
+            outside.write_text(json.dumps({"id": "REG-20990101-evil", "ts": "2099-01-01"}))
+            (reg / "REG-20990101-evil.json").symlink_to(outside)
+            proj = ResearchProject(ResearchSource("demo", reg), Path(d) / "data")
+            self.assertEqual([r["id"] for r in proj.data()["records"]], ["REG-20260101-aaaa"])  # symlink skipped
+            self.assertIsNone(proj.record("REG-20990101-evil"))
+            self.assertIsNone(proj.record("."))  # no substring scan
+            self.assertEqual(proj.record("REG-20260101-aaaa")["id"], "REG-20260101-aaaa")
+        self.assertIsNone(gauge({"threshold": float("inf")}, {"val": 1.0}, None))
+        self.assertIsNone(gauge({"threshold": 1.0}, {"val": 2.0}, "1e999 huge")["noise"])
+
+    def test_quotes_and_time_order(self):
+        from wd.research_propose import _norm, older, quote_supported
+        text = _norm("FOO-1 的取樣問題要修掉，所以重做")
+        self.assertTrue(quote_supported("FOO-1 的取樣問題要修掉", text))
+        self.assertTrue(quote_supported("FOO-1 的取樣…所以重做", text))
+        self.assertFalse(quote_supported("…………", text))
+        self.assertFalse(quote_supported("，。", text))
+        self.assertFalse(quote_supported("FOO-1 的取樣…完全沒寫的話", text))
+        self.assertTrue(older("2026-01-01T17:00:00Z", "2026-01-02T02:30:00+08:00"))
+        # +08:00 00:30 is 16:30Z: a record at 17:00Z is newer, so it can't be the older end
+        self.assertFalse(older("2026-01-01T17:00:00Z", "2026-01-02T00:30:00+08:00"))
+
+    def test_malformed_transcript_lines(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "t.jsonl"
+            bad = ['{"type":"assistant","message":"text"}', '{"type":"assistant","message":{"content":[{"type":"text","text":null}]}}',
+                   "[" * 5000 + "]" * 5000, '"just a string"', '{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}']
+            p.write_text("\n".join(bad) + "\n")
+            st = TranscriptTail(p).update()
+            self.assertEqual(st.last_reply, "ok")
+
+    def test_fast_first_turn_counts(self):
+        from wd.attention import SOON, attention
+        now = 10_000_000_000
+        s = {"status": "idle", "started_at": now - 120_000, "status_since": now - 90_000, "last_reply_at": now - 90_000}
+        self.assertEqual(attention(s, now, 5)[0], SOON)
