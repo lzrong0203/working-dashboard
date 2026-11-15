@@ -167,6 +167,7 @@ def _research(raw: list) -> list:
             name=name, path=expand(r["path"]), label=str(r.get("label") or ""),
             format=str(r.get("format") or "prereg-json"),
             overlay=expand(r["overlay"]) if r.get("overlay") else None, fields=fields,
+            forbidden=[str(x) for x in r.get("forbidden", [])],
         ))
     return out
 

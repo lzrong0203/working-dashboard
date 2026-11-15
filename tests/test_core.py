@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import sys
 import time
 import unittest
 from datetime import datetime, timezone
@@ -591,28 +592,46 @@ class ResearchTest(unittest.TestCase):
             self.assertEqual([e["type"] for e in data["edges"]], ["uses"])  # unknown target dropped
             self.assertEqual({r["id"]: r.get("why_short") for r in data["records"]}[a["id"]], "first try")
 
-    def test_propose_validates_links(self):
+    def test_propose_pipeline(self):
         from wd.research import ResearchSource
         from wd.research_propose import propose
         with tempfile.TemporaryDirectory() as d:
             reg = Path(d) / "registry"
             reg.mkdir()
-            a = {"id": "REG-20260101-aaaa", "ts": "2026-01-01", "title": "FOO-1：baseline", "status": "fail"}
+            a = {"id": "REG-20260101-aaaa", "ts": "2026-01-01", "title": "FOO-1：baseline", "status": "fail",
+                 "result": {"verdict": "FAIL", "cv": "對 12 個公開實測材料，誤差 3 倍"}}
             b = {"id": "REG-20260102-bbbb", "ts": "2026-01-02", "title": "FOO-1b：fix", "status": "pass",
-                 "why": "FOO-1 的取樣問題要修掉"}
+                 "why": "FOO-1 的取樣問題要修掉", "result": {"verdict": "PASS", "cv": "12 個公開實測材料上，修正後誤差降到 1.5 倍"}}
             for r in (a, b):
                 (reg / f"{r['id']}.json").write_text(json.dumps(r, ensure_ascii=False))
+            answers = {
+                "請逐筆整理": {"records": [
+                    {"id": b["id"], "name": "修正取樣 FOO-1b", "why": "修 FOO-1", "result": "修正後誤差降到 1.5 倍", "level": 3,
+                     "level_quote": "修正後誤差降到 1.5 倍", "n": 12,
+                     "edges": [{"to": "FOO-1", "type": "because", "quote": "FOO-1 的取樣問題要修掉"},
+                               {"to": a["id"], "type": "uses", "quote": "made-up sentence not in record"}]},
+                    {"id": a["id"], "name": "起點", "why": "起點", "result": "誤差 3 倍", "level": 3,
+                     "level_quote": "對 12 個公開實測材料", "n": 12, "edges": [{"to": b["id"], "type": "follows", "quote": "FOO-1b：fix"}]}]},
+                "請整理成兩層": {"goals": [{"id": "g-method", "title": "方法可信", "bar": "誤差 2 倍內"}],
+                                "questions": [{"id": "q-sampling", "parent": "g-method", "kind": "question", "title": "取樣夠嗎？",
+                                               "members": [a["id"], b["id"]]}]},
+                "請對每條途徑": {"goal_answer": {"text": "修正後接近標準", "cites": [b["id"]]}, "questions": [{
+                    "id": "q-sampling", "holds": [{"text": "修正取樣有效", "cites": [b["id"]]}], "fails": [], "unknown": [],
+                    "stuck": "none", "next": "擴大材料數", "decision": "",
+                    "findings": [{"statement": "修正取樣後誤差降到 1.5 倍", "basis": "對 12 個公開實測材料", "so_what": "可以用",
+                                  "change_if": "新材料誤差變大", "cites": [{"id": b["id"], "role": "supports", "quote": "修正後誤差降到 1.5 倍"}]},
+                                 {"statement": "誤差是 7 倍", "basis": "沒根據", "so_what": "", "change_if": "",
+                                  "cites": [{"id": a["id"], "role": "supports", "quote": "完全沒有這句"}]}]}]},
+                "會議報告": {"title": "進度", "one_page": {"goal": "g", "success": "s", "answer": "a", "why_hard": "w",
+                                                       "numbers": [{"text": "誤差降到 1.5 倍", "cites": [b["id"]]}]},
+                           "learned": [{"headline": "修正取樣有效", "basis": "公開實測", "so_what": "可用", "findings": ["f-sampling-1"]},
+                                       {"headline": "沒出處的話", "basis": "", "so_what": "", "findings": []}],
+                           "routes": [{"question": "q-sampling", "plain": "取樣", "status": "可用", "stuck": "無"}],
+                           "unknowns": [], "decisions": [], "next_weeks": [], "glossary": []},
+            }
             fake = Path(d) / "fake-claude"
-            q = {"goals": [{"id": "g-method", "title": "方法可信", "bar": "sd ≤ 0.5", "answer": "接近", "state": "mixed"}],
-                 "questions": [{"id": "q-sampling", "parent": "g-method", "kind": "question", "title": "取樣夠嗎？",
-                                "answer": "修完就夠", "state": "supported", "members": [a["id"], b["id"]]}]}
-            rr = {"records": [{"id": b["id"], "question": "q-sampling", "why": "修 FOO-1", "result": "過了", "edges": [
-                {"to": "FOO-1", "type": "because", "quote": "FOO-1 的取樣問題要修掉"},      # code -> id, quote ok
-                {"to": a["id"], "type": "uses", "quote": "made-up sentence not in record"},   # dropped
-            ]}, {"id": a["id"], "question": "q-sampling", "why": "起點", "result": "沒過",
-                 "edges": [{"to": b["id"], "type": "follows", "quote": "FOO-1b"}]}]}            # points forward: dropped
-            fake.write_text("#!/bin/sh\nif grep -q '研究問題：' ; then echo '%s'; else echo '%s'; fi\n" % (
-                json.dumps({"structured_output": rr}, ensure_ascii=False), json.dumps({"structured_output": q}, ensure_ascii=False)))
+            fake.write_text("#!" + sys.executable + "\nimport sys, json\nprompt = sys.stdin.read()\nA = " + repr(answers) +
+                            "\nfor k, v in A.items():\n    if k in prompt:\n        print(json.dumps({'structured_output': v}, ensure_ascii=False)); break\n")
             fake.chmod(0o755)
             old = os.environ.get("WD_CLAUDE")
             os.environ["WD_CLAUDE"] = str(fake)
@@ -621,11 +640,20 @@ class ResearchTest(unittest.TestCase):
             finally:
                 os.environ.pop("WD_CLAUDE") if old is None else os.environ.__setitem__("WD_CLAUDE", old)
             ov = json.loads(path.read_text())
-            self.assertEqual([x["id"] for x in ov["questions"]], ["q-sampling"])
-            self.assertEqual((ov["goals"][0]["id"], ov["questions"][0]["parent"]), ("g-method", "g-method"))
-            self.assertEqual(ov["records"][b["id"]]["why"], "修 FOO-1")
+            self.assertEqual(ov["records"][b["id"]]["name"], "修正取樣")  # internal code stripped
             self.assertEqual([(e["from"], e["to"], e["type"]) for e in ov["edges"]], [(b["id"], a["id"], "because")])
-
+            q = ov["questions"][0]
+            f1, f2 = q["findings"]
+            self.assertEqual(f1["confidence"], "對公開實測成立")  # computed: level 3, n 12, passed
+            self.assertEqual(f1["warnings"], [])
+            self.assertEqual(f2["cites"], [])  # unsupported quote dropped
+            self.assertIn("沒有可驗證的出處", f2["warnings"])
+            self.assertTrue(any("7" in w for w in f2["warnings"]))  # number not in sources
+            rep = json.loads(path.with_name(path.stem + ".report.json").read_text())
+            self.assertEqual(rep["learned"][0]["confidence"], "對公開實測成立")
+            self.assertEqual(rep["learned"][0]["cites"], [b["id"]])
+            self.assertIn("沒有對應的結論，不應放進報告", rep["learned"][1]["warnings"])
+            self.assertEqual(rep["status"], "draft")
 
 class ReviewFixesTest(unittest.TestCase):
     def test_research_guards(self):

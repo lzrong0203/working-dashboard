@@ -14,7 +14,9 @@ const OUTCOME = {
   pass: ["✓", "通過"], fail: ["✗", "不通過"], inconclusive: ["?", "未定"], void: ["⌀", "作廢"],
   running: ["●", "進行中"], open: ["○", "已登記"], other: ["·", "其他"],
 };
-const MODES = [["map", "總覽"], ["topic", "依主題"], ["time", "時間線"], ["cited", "被引用"], ["report", "報告"]];
+const MODES = [["now", "現況"], ["topic", "途徑"], ["map", "歷程"], ["time", "時間線"], ["cited", "被引用"], ["report", "報告"]];
+const STUCK = { method: "方法還不可信", measure: "在等量測", external: "等外部決定或資料", not_started: "還沒開始", closed: "已結案", none: "" };
+const LEVEL = ["看不出來", "只有想法", "模擬對模擬", "對公開實測", "對自有／供應方實測", "目標條件實測確認"];
 const STATE = { supported: "大致成立", refuted: "大致不成立", mixed: "有成有敗", open: "還沒有答案" };
 const KIND = { route: "途徑", question: "問題", cross: "方法" };
 const bare = (title, kind) => (kind === "route" ? String(title).replace(/^(候選)?途徑[:：]\s*/, "") : title);
@@ -22,10 +24,11 @@ const bare = (title, kind) => (kind === "route" ? String(title).replace(/^(候�
 const cache = new Map(); // `${realm}/${name}` -> {fp, data, loading, error}
 const ui = {
   proj: lsGet("wd.research.proj") || "",
-  mode: lsGet("wd.research.mode") || "map",
+  mode: lsGet("wd.research.mode") || "now",
   group: lsGet("wd.research.group") || "",
   focus: "",
   q: "",
+  reportList: false,
 };
 let rerender = () => {};
 
@@ -104,6 +107,7 @@ const fmt = (x) => { const a = Math.abs(x); return a >= 100 ? x.toFixed(0) : a >
 // side is tinted, the noise floor is a grey band around the threshold.
 function gaugeSvg(g, outcome) {
   if (!g) return "";
+  if (g.multi) return `<p class="gauge multi" title="${esc(g.metric)}">多條件判準：主判準的落點和最終判定不一致（要 ${g.dir === "up" ? "≥" : "≤"} ${esc(fmt(g.th))}，實測 ${esc(fmt(g.val))}），以登記原文的判定為準。</p>`;
   const n = g.noise || 0;
   let lo = Math.min(g.th - n, g.val), hi = Math.max(g.th + n, g.val);
   const pad = (hi - lo || Math.abs(g.th) * 0.2 || 1) * 0.15;
@@ -134,7 +138,7 @@ function rcard(r, D) {
   const ins = (D.inn.get(r.id) || []).filter((e) => e.type !== "mentions");
   const why = r.why_short || r.why;
   const hyp = !why && r.hypothesis && !r.hypothesis.startsWith(r.title.replace(/…$/, "")) ? r.hypothesis : "";
-  const result = r.result_short || [r.verdict, r.result].filter(Boolean).join("：");
+  const result = r.result_short || [r.verdict, r.result].filter(Boolean).join("：") || (r.latest_note ? `（後續補記）${r.latest_note}` : "");
   const nCited = (D.cited.get(r.id) || []).length;
   return `
   <article class="rcard o-${esc(r.outcome)}${ui.focus === r.id ? " focus" : ""}" id="r-${esc(r.id)}" data-id="${esc(r.id)}">
@@ -145,7 +149,7 @@ function rcard(r, D) {
       ${r.kind ? `<span class="chip">${esc(r.kind)}</span>` : ""}
       <span class="rid" title="${esc(r.status)}">${esc(r.id)}</span>
     </header>
-    <h3 class="rtitle">${esc(r.title)}</h3>
+    <h3 class="rtitle">${esc(r.name || r.title)}</h3>${r.name ? `<p class="rorig">${esc(r.title)}</p>` : ""}
     <dl>
       ${why ? `<dt>為什麼</dt>${more(why, r.why_short ? "" : "why")}` : ""}
       ${hyp ? `<dt>假設</dt>${more(hyp, "hypothesis")}` : ""}
@@ -175,63 +179,6 @@ function counts(rs) {
 // result landed from its own threshold, in % of that threshold, with its own
 // noise band), and the lineage inside the direction.
 const STRONG_TYPES = new Set(["follows", "because", "readjudicates", "supersedes", "corrects"]);
-const METHODISH = /adjudication|rule|calibration|validation|free_check|benchmark|tool/;
-function margin(g) {
-  if (!g || !g.th) return null;
-  const sign = g.dir === "down" ? -1 : 1;
-  return { m: (sign * (g.val - g.th)) / Math.abs(g.th), band: g.noise != null ? g.noise / Math.abs(g.th) : null };
-}
-function strength(r) {
-  const mg = margin(r.gauge);
-  if (!mg) return r.gauge ? 2 : 1;
-  const beyond = mg.band != null ? Math.abs(mg.m) > mg.band : Math.abs(mg.m) > 0.1;
-  return beyond ? 3 : 2;
-}
-function harvest(rs) {
-  const cols = [["pass", "通過", "支持假設"], ["inconclusive", "判不出", "雜訊內或未定"], ["fail", "不通過", "不支持"]];
-  const colOf = (r) => (r.outcome === "pass" ? "pass" : r.outcome === "fail" ? "fail" : r.outcome === "inconclusive" || r.outcome === "other" ? "inconclusive" : "");
-  const rest = rs.filter((r) => !colOf(r));
-  const bar = (r) => `<button class="hb o-${esc(r.outcome)}${METHODISH.test(r.kind) ? " k-method" : ""}" style="--h:${strength(r)}" data-rid="${esc(r.id)}" title="${esc(`${day(r.ts)} ${r.code || ""}：${r.title}${r.verdict ? `｜${r.verdict}` : ""}`)}"></button>`;
-  return `
-  <figure class="syn harvest">
-    <figcaption><b>證據收成圖</b><span>每根柱子一筆登記，依時間由左到右；越高代表結果越明確（超出雜訊或門檻 10% 以上）。斜線是方法檢查或重新裁定。</span></figcaption>
-    <div class="hcols">${cols.map(([k, t, sub]) => {
-      const xs = rs.filter((r) => colOf(r) === k);
-      return `<div class="hcol"><div class="hbars">${xs.map(bar).join("")}</div><p><b>${t}</b> ${xs.length}<span>${sub}</span></p></div>`;
-    }).join("")}</div>
-    ${rest.length ? `<p class="hrest">另有 ${rest.map((r) => `<button class="rlink" data-rid="${esc(r.id)}">${badge(r.outcome)} ${esc(r.code || r.id.slice(-4))}</button>`).join(" ")}</p>` : ""}
-  </figure>`;
-}
-const pct = (a) => (a >= 10 ? `${Math.round(a)}×` : `${Math.round(a * 100)}%`);
-function forest(rs) {
-  const rows = rs.map((r) => ({ r, mg: margin(r.gauge) })).filter((x) => x.mg);
-  const skipped = rs.filter((r) => r.gauge && !margin(r.gauge)).length;
-  if (!rows.length) return "";
-  // symmetric log scale: margins run from a few % to thousands of % of the
-  // threshold, and both ends matter (a near miss vs a landslide)
-  const T = (m) => Math.sign(m) * Math.log10(1 + Math.abs(m) / 0.1);
-  const LIM = T(10), W = 300, H = 18, x = (v) => ((Math.max(-LIM, Math.min(LIM, T(v))) + LIM) / (2 * LIM)) * W;
-  const ticks = [-10, -1, -0.1, 0, 0.1, 1, 10];
-  const row = ({ r, mg }) => {
-    const out = Math.abs(mg.m) > 10;
-    return `<div class="frow">
-      <button class="flabel" data-rid="${esc(r.id)}" title="${esc(r.title)}"><time>${esc(day(r.ts))}</time> ${esc(r.code || r.id.slice(-4))}</button>
-      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
-        ${ticks.map((t) => `<line class="${t === 0 ? "zero" : "grid"}" x1="${x(t)}" y1="0" x2="${x(t)}" y2="${H}"/>`).join("")}
-        ${mg.band != null ? `<rect class="band" x="${x(-mg.band)}" y="4" width="${Math.max(1, x(mg.band) - x(-mg.band))}" height="${H - 8}"/>` : ""}
-        <rect class="mk o-${esc(r.outcome)}${r.outcome === "fail" ? " dia" : ""}" x="${x(mg.m) - 4}" y="${H / 2 - 4}" width="8" height="8" rx="${r.outcome === "fail" ? 0 : 4}"${r.outcome === "fail" ? ` transform="rotate(45 ${x(mg.m)} ${H / 2})"` : ""}/>
-        ${out ? `<text x="${mg.m > 0 ? W - 2 : 2}" y="${H / 2 + 3}" text-anchor="${mg.m > 0 ? "end" : "start"}" class="clip">${mg.m > 0 ? "»" : "«"}</text>` : ""}
-      </svg>
-      <span class="fval">${(mg.m >= 0 ? "+" : "−") + pct(Math.abs(mg.m))}</span>
-    </div>`;
-  };
-  return `
-  <figure class="syn forest">
-    <figcaption><b>離門檻多遠</b><span>每列一筆有數字門檻的登記：0 是門檻，右邊是往「通過」的方向，單位是門檻的百分比，刻度是對數（10%、100%、1000%），超過 10 倍畫在邊上。灰帶是那筆自己的雜訊地板，落在灰帶裡等於判不出來。${skipped ? ` ${skipped} 筆門檻為 0，無法換算，沒有列入。` : ""}</span></figcaption>
-    <div class="faxis"><span></span><div>${ticks.map((t) => `<i style="left:${(x(t) / W) * 100}%">${t === 0 ? "0" : (t > 0 ? "+" : "−") + Math.abs(t) * 100 + "%"}</i>`).join("")}</div><span></span></div>
-    ${rows.map(row).join("")}
-  </figure>`;
-}
 function lineage(rs, D) {
   const ids = new Set(rs.map((r) => r.id));
   const edges = [];
@@ -266,9 +213,87 @@ function lineage(rs, D) {
     <div class="lscroll"><svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${paths}${dotsSvg}</svg></div>
   </figure>`;
 }
+// Harvest plot and %-of-threshold forest were removed after review (Codex and
+// a second model): PASS/FAIL columns read as vote counts (a PASS can mean
+// "this method is unreliable"), and margins of different metrics are not
+// comparable even when divided by their thresholds. Kept: the lineage.
 function synthesis(rs, D) {
   if (rs.length < 2) return "";
-  return `<div class="synthesis">${harvest(rs)}${forest(rs)}${lineage(rs, D)}</div>`;
+  const lin = lineage(rs, D);
+  return lin ? `<div class="synthesis one">${lin}</div>` : "";
+}
+
+// ---- claims: what holds / fails / is unknown, and findings with their sources ----
+const nameOf = (r) => r?.name || r?.title || r?.id || "";
+function citeChips(ids, D) {
+  return (ids || []).filter((i) => D.byId.has(i)).map((i) => {
+    const r = D.byId.get(i);
+    return `<button class="cite" data-rid="${esc(i)}" title="${esc(`${day(r.ts)} ${nameOf(r)}｜${(OUTCOME[r.outcome] || OUTCOME.other)[1]}`)}">${esc(day(r.ts))}</button>`;
+  }).join("");
+}
+function threeLines(q, D) {
+  const row = (label, cls, xs) => xs?.length ? `<div class="tl ${cls}"><b>${label}</b><ul>${xs.map((x) => `<li>${esc(x.text)} ${citeChips(x.cites, D)}</li>`).join("")}</ul></div>` : "";
+  const body = row("成立的", "t-hold", q.holds) + row("不成立的", "t-fail", q.fails) + row("還不知道的", "t-unk", q.unknown);
+  if (!body) return "";
+  return `<div class="three">${body}
+    <p class="tnext">${q.stuck && STUCK[q.stuck] ? `<span class="stuck">卡在：${esc(STUCK[q.stuck])}</span>` : ""}${q.next ? `<span><b>下一步</b>${esc(q.next)}</span>` : ""}${q.decision ? `<span class="dec"><b>待決定</b>${esc(q.decision)}</span>` : ""}</p>
+    <p class="aidraft">AI 整理的草稿：每句都連到登記，請點開核對後再對外使用。</p></div>`;
+}
+const ROLE = { supports: "支持", against: "反對", limits: "限制" };
+function findingCard(f, D) {
+  return `<article class="finding">
+    <h4>${esc(f.statement)}</h4>
+    <p class="fconf"><span class="conf">${esc(f.confidence || "")}</span>${f.basis ? `<span class="fbasis">憑什麼：${esc(f.basis)}</span>` : ""}</p>
+    ${f.so_what ? `<p><b>所以</b>${esc(f.so_what)}</p>` : ""}
+    ${f.change_if ? `<p class="muted"><b>什麼會推翻它</b>${esc(f.change_if)}</p>` : ""}
+    <div class="fcites">${(f.cites || []).map((c) => { const r = D.byId.get(c.id); return r ? `<button class="fcite r-${esc(c.role)}" data-rid="${esc(c.id)}" title="${esc(`「${c.quote}」`)}"><i>${esc(ROLE[c.role] || c.role)}</i>${esc(day(r.ts))} ${esc(nameOf(r))}</button>` : ""; }).join("")}</div>
+    ${(f.warnings || []).length ? `<p class="fwarn">⚠ ${f.warnings.map(esc).join("；")}</p>` : ""}
+  </article>`;
+}
+// Evidence ladder: has this route reached each level, and did it pass there?
+function ladder(rs) {
+  const cells = [1, 2, 3, 4, 5].map((lv) => {
+    const at = rs.filter((r) => (r.level || 0) === lv);
+    const st = at.some((r) => r.outcome === "pass") ? "pass" : at.length ? "tried" : "none";
+    return `<i class="lad l-${st}" title="${esc(`${LEVEL[lv]}：${st === "pass" ? "有通過的" : st === "tried" ? "試過、沒通過" : "沒試過"}（${at.length} 筆）`)}"></i>`;
+  }).join("");
+  return `<span class="ladder" aria-label="證據階梯">${cells}</span>`;
+}
+function evidenceTable(rs, D) {
+  if (!rs.length) return "";
+  return `<table class="etable"><thead><tr><th>日期</th><th>在問什麼</th><th>跟什麼比</th><th>n</th><th>登記判定</th></tr></thead><tbody>${rs.slice().reverse().map((r) => `
+    <tr data-rid="${esc(r.id)}" tabindex="0"><td class="d">${esc(day(r.ts))}</td><td>${esc(nameOf(r))}${r.result_short ? `<div class="v">${esc(r.result_short)}</div>` : ""}</td>
+    <td class="lv">${esc(LEVEL[r.level || 0])}</td><td class="n">${r.n || "—"}</td><td>${badge(r.outcome)}</td></tr>`).join("")}</tbody></table>`;
+}
+function lastResult(rs) {
+  const done = rs.filter((r) => ["pass", "fail", "inconclusive"].includes(r.outcome));
+  return done.length ? done[done.length - 1].ts : "";
+}
+function statusBoard(d, D) {
+  if (!D.goals.length) return `<p class="hint">還沒有 AI 整理的目標與途徑。</p>` + topic(d, D);
+  const decisions = [];
+  const blocks = D.goals.map((g) => {
+    const rows = g.qs.map((x) => {
+      const q = x.q || {};
+      if (q.decision) decisions.push({ q: x.title, text: q.decision });
+      const lr = lastResult(x.rs), stale = lr && Date.now() - Date.parse(lr) > 14 * 864e5;
+      const ans = q.template ? q.unknown?.[0]?.text : (q.holds?.[0]?.text || q.fails?.[0]?.text || q.unknown?.[0]?.text || q.answer || "");
+      return `<tr data-group="${esc(x.id)}" tabindex="0">
+        <td class="rt">${q.kind ? `<i class="kind k-${esc(q.kind)}">${esc(KIND[q.kind] || q.kind)}</i>` : ""}${esc(bare(x.title, q.kind))}</td>
+        <td class="ra">${esc(ans)}</td><td>${ladder(x.rs)}</td>
+        <td class="rs">${esc(STUCK[q.stuck] || "")}</td>
+        <td class="rd${stale ? " stale" : ""}">${esc(day(lr) || "—")}</td>
+        <td class="rn">${esc(q.next || "")}</td></tr>`;
+    }).join("");
+    return `<section class="goal${g.id === "g-cross" ? " cross" : ""}"><header><h2>${esc(g.title)}</h2>
+      ${g.bar ? `<p class="bar"><b>怎樣算成功</b>${esc(g.bar)}</p>` : ""}${g.answer ? `<p class="bar"><b>現在的答案</b>${esc(g.answer)} ${citeChips(g.answer_cites, D)}</p>` : ""}</header>
+      <table class="board"><thead><tr><th>途徑／問題</th><th>現在的答案</th><th title="①只有想法 ②模擬對模擬 ③對公開實測 ④對自有／供應方實測 ⑤目標條件實測確認">證據階梯</th><th>卡在哪</th><th>最近結果</th><th>下一步</th></tr></thead><tbody>${rows}</tbody></table></section>`;
+  }).join("");
+  const cutoff = d.records.length ? d.records[d.records.length - 1].ts.slice(0, 10) : "";
+  return `<div class="nowgrid"><div>${blocks}</div><aside class="side">
+    <section><h3>待決定</h3>${decisions.length ? `<ul>${decisions.map((x) => `<li><b>${esc(bare(x.q, "route"))}</b>${esc(x.text)}</li>`).join("")}</ul>` : `<p class="muted">目前沒有列出待決事項。</p>`}</section>
+    <section><h3>怎麼讀</h3><p class="muted">證據階梯五格：①只有想法 ②模擬對模擬 ③對公開實測 ④對自有／供應方實測 ⑤目標條件實測確認。實心＝有通過的，空心框＝試過沒過，淡＝沒試。「最近結果」超過 14 天變灰。資料到 ${esc(cutoff)}。</p></section>
+  </aside></div>`;
 }
 
 function topic(d, D) {
@@ -290,11 +315,14 @@ function topic(d, D) {
     <section class="rstory">
       <header class="rhead">
         <h2>${esc(g?.title || "")}</h2>
-        ${q?.answer ? `<p class="answer"><b>目前答案</b>${esc(q.answer)}${q.state ? ` <span class="chip">${esc(q.state)}</span>` : ""}</p>` : ""}
-        <p class="rcounts">${counts(g?.rs || [])}</p>
+        ${q?.answer && !(q.holds?.length || q.fails?.length || q.unknown?.length) ? `<p class="answer"><b>目前答案（AI 整理，待確認）</b>${esc(q.answer)}${q.state ? ` <span class="st s-${esc(q.state)}">${esc(STATE[q.state] || q.state)}</span>` : ""}</p>` : ""}
       </header>
+      ${q ? threeLines(q, D) : ""}
+      ${(q?.findings || []).length ? `<h3 class="sub">學到的事</h3><div class="findings">${q.findings.map((f) => findingCard(f, D)).join("")}</div>` : ""}
+      <h3 class="sub">證據（${(g?.rs || []).length} 筆）<span class="rcounts">${counts(g?.rs || [])}</span></h3>
+      ${evidenceTable(g?.rs || [], D)}
       ${synthesis(g?.rs || [], D)}
-      <div class="timeline">${(g?.rs || []).map((r) => rcard(r, D)).join("")}</div>
+      <details class="cards"${ui.focus ? " open" : ""}><summary>逐筆詳細（假設、輸的條件、結果原文）</summary><div class="timeline">${(g?.rs || []).map((r) => rcard(r, D)).join("")}</div></details>
     </section>
   </div>`;
 }
@@ -384,14 +412,65 @@ function reportMd(d, D, label) {
   return out.join("\n");
 }
 
+// The meeting report: written by `wd research propose` from verified findings
+// only; confidence labels are computed, never chosen by the model. Footnotes
+// [n] map to the appendix (date, plain name, verdict, evidence level, id).
+function meeting(rep, d, D) {
+  const notes = [], num = new Map();
+  const fn = (ids) => (ids || []).filter((i) => D.byId.has(i)).map((i) => { if (!num.has(i)) { num.set(i, num.size + 1); notes.push(i); } return num.get(i); });
+  const sup = (ids) => { const ns = fn(ids); return ns.length ? `<sup>${ns.map((n) => `<button class="fn" data-rid="${esc(notes[n - 1])}">[${n}]</button>`).join("")}</sup>` : ""; };
+  const supMd = (ids) => { const ns = fn(ids); return ns.length ? ns.map((n) => `[${n}]`).join("") : ""; };
+  const op = rep.one_page || {};
+  const q = (id) => (d.questions || []).find((x) => x.id === id);
+  const html = [], md = [];
+  const stale = rep.fingerprint && rep.fingerprint !== d.fp;
+  html.push(`<header class="mhead"><h2>${esc(rep.title || "研究進度")}</h2><p class="muted">資料截止 ${esc(rep.cutoff || "")}・${esc(rep.status === "draft" ? "草稿，研究者確認前不要對外" : rep.status || "")}${stale ? "・之後有新的登記，這份還沒更新" : ""}</p></header>`);
+  md.push(`# ${rep.title || "研究進度"}`, "", `資料截止 ${rep.cutoff || ""}。${rep.status === "draft" ? "草稿，研究者確認前不要對外。" : ""}`, "");
+  html.push(`<section><h3>1　一頁結論</h3><dl class="mdl"><dt>目標</dt><dd>${esc(op.goal)}</dd><dt>成功標準</dt><dd>${esc(op.success)}</dd><dt>現在的答案</dt><dd><b>${esc(op.answer)}</b></dd><dt>難在哪</dt><dd>${esc(op.why_hard)}</dd></dl>
+    ${(op.numbers || []).length ? `<ul class="nums">${op.numbers.map((x) => `<li>${esc(x.text)}${sup(x.cites)}${(x.warnings || []).length ? ` <span class="fwarn">⚠ 數字 ${x.warnings.map(esc).join("、")} 在出處找不到</span>` : ""}</li>`).join("")}</ul>` : ""}</section>`);
+  md.push("## 1　一頁結論", "", `- **目標**：${op.goal || ""}`, `- **成功標準**：${op.success || ""}`, `- **現在的答案**：${op.answer || ""}`, `- **難在哪**：${op.why_hard || ""}`, ...(op.numbers || []).map((x) => `- ${x.text}${supMd(x.cites)}`), "");
+  html.push(`<section><h3>2　我們學到的事</h3>${(rep.learned || []).map((x, k) => `<article class="mlearn"><h4>${k + 1}．${esc(x.headline)}${sup(x.cites)}</h4>
+    <p><b>憑什麼</b>${esc(x.basis)}</p><p><b>把握</b><span class="conf">${esc(x.confidence)}</span></p><p><b>所以</b>${esc(x.so_what)}</p>
+    ${(x.warnings || []).length ? `<p class="fwarn">⚠ 檢查：${x.warnings.map(esc).join("；")}</p>` : ""}</article>`).join("")}</section>`);
+  md.push("## 2　我們學到的事", "");
+  (rep.learned || []).forEach((x, k) => md.push(`### ${k + 1}．${x.headline}${supMd(x.cites)}`, "", `- 憑什麼：${x.basis}`, `- 把握：${x.confidence}`, `- 所以：${x.so_what}`, ""));
+  html.push(`<section><h3>3　路線現況</h3><table class="mtable"><thead><tr><th>路線</th><th>白話</th><th>現況</th><th>卡在哪</th><th>證據階梯</th></tr></thead><tbody>${(rep.routes || []).map((x) => {
+    const qq = q(x.question), g = D.groups.find((y) => y.id === x.question);
+    return `<tr data-group="${esc(x.question)}"><td>${esc(bare(qq?.title || x.question, qq?.kind))}</td><td>${esc(x.plain)}</td><td>${esc(x.status)}</td><td>${esc(x.stuck)}</td><td>${g ? ladder(g.rs) : ""}</td></tr>`;
+  }).join("")}</tbody></table></section>`);
+  md.push("## 3　路線現況", "", "| 路線 | 白話 | 現況 | 卡在哪 |", "|---|---|---|---|", ...(rep.routes || []).map((x) => `| ${bare(q(x.question)?.title || x.question, q(x.question)?.kind)} | ${x.plain} | ${x.status} | ${x.stuck} |`), "");
+  if ((rep.unknowns || []).length) {
+    html.push(`<section><h3>4　還不知道、可能翻盤的</h3><ul>${rep.unknowns.map((x) => `<li><b>${esc(x.item)}</b>${sup(x.cites)}<br><span class="muted">什麼結果會改變結論：${esc(x.change_if)}</span></li>`).join("")}</ul></section>`);
+    md.push("## 4　還不知道、可能翻盤的", "", ...rep.unknowns.map((x) => `- **${x.item}**${supMd(x.cites)}：什麼結果會改變結論——${x.change_if}`), "");
+  }
+  if ((rep.decisions || []).length) {
+    html.push(`<section><h3>5　需要決定的事</h3><table class="mtable"><thead><tr><th>決定什麼</th><th>選項與代價</th><th>建議</th><th>誰</th><th>何時前</th></tr></thead><tbody>${rep.decisions.map((x) => `<tr><td>${esc(x.decision)}</td><td>${esc(x.options)}</td><td>${esc(x.recommendation)}</td><td>${esc(x.who)}</td><td>${esc(x.by_when)}</td></tr>`).join("")}</tbody></table></section>`);
+    md.push("## 5　需要決定的事", "", "| 決定什麼 | 選項與代價 | 建議 | 誰 | 何時前 |", "|---|---|---|---|---|", ...rep.decisions.map((x) => `| ${x.decision} | ${x.options} | ${x.recommendation} | ${x.who} | ${x.by_when} |`), "");
+  }
+  if ((rep.next_weeks || []).length) {
+    html.push(`<section><h3>6　接下來四週</h3><ul>${rep.next_weeks.map((x) => `<li><b>${esc(x.task)}</b>：做完會知道 ${esc(x.learn)}</li>`).join("")}</ul></section>`);
+    md.push("## 6　接下來四週", "", ...rep.next_weeks.map((x) => `- **${x.task}**：做完會知道 ${x.learn}`), "");
+  }
+  const appendix = notes.map((id, k) => { const r = D.byId.get(id); return { n: k + 1, r }; });
+  html.push(`<section class="appendix"><h3>附錄 A　出處</h3><table class="mtable"><thead><tr><th>註</th><th>日期</th><th>在問什麼</th><th>登記判定</th><th>證據層級</th><th>登記編號</th></tr></thead><tbody>${appendix.map(({ n, r }) => `<tr data-rid="${esc(r.id)}"><td>[${n}]</td><td>${esc(r.ts.slice(0, 10))}</td><td>${esc(nameOf(r))}</td><td>${badge(r.outcome)}</td><td>${esc(LEVEL[r.level || 0])}${r.n ? `，${r.n} 個材料` : ""}</td><td class="rid">${esc(r.id)}</td></tr>`).join("")}</tbody></table>
+    ${(rep.glossary || []).length ? `<h3>附錄 B　名詞</h3><dl class="mdl">${rep.glossary.map((x) => `<dt>${esc(x.term)}</dt><dd>${esc(x.plain)}</dd>`).join("")}</dl>` : ""}</section>`);
+  md.push("## 附錄 A　出處", "", "| 註 | 日期 | 在問什麼 | 登記判定 | 證據層級 | 登記編號 |", "|---|---|---|---|---|---|",
+    ...appendix.map(({ n, r }) => `| [${n}] | ${r.ts.slice(0, 10)} | ${nameOf(r)} | ${(OUTCOME[r.outcome] || OUTCOME.other)[1]} | ${LEVEL[r.level || 0]}${r.n ? `，${r.n} 個材料` : ""} | ${r.id} |`), "");
+  if ((rep.glossary || []).length) md.push("## 附錄 B　名詞", "", ...rep.glossary.map((x) => `- **${x.term}**：${x.plain}`), "");
+  return { html: html.join(""), md: md.join("\n") };
+}
+
 function reportView(d, D, label) {
-  const md = reportMd(d, D, label);
-  return `
-  <div class="rreport">
-    <p class="muted">依目標與方向整理的進度報告，可以直接貼進週報、Discussion 或簡報備忘稿。AI 整理的「目前答案」請先看過再對外使用。</p>
-    <div class="rrbar"><button type="button" id="rrcopy">複製 Markdown</button><button type="button" id="rrsave">下載 .md</button></div>
-    <pre id="rrmd">${esc(md)}</pre>
-  </div>`;
+  const rep = d.report;
+  const list = reportMd(d, D, label);
+  if (!rep || ui.reportList) {
+    return `<div class="rreport"><p class="muted">${rep ? "證據清單：依目標與方向列出每筆登記，給研究者核對用。" : "還沒有會議版報告。在 hub 上執行 <code>wd research propose &lt;name&gt; --stages claims,report</code> 產生。下面是證據清單。"}</p>
+      <div class="rrbar">${rep ? `<button type="button" data-rlist="0">回會議版</button>` : ""}<button type="button" id="rrcopy">複製 Markdown</button><button type="button" id="rrsave">下載 .md</button></div>
+      <pre id="rrmd">${esc(list)}</pre></div>`;
+  }
+  const m = meeting(rep, d, D);
+  return `<div class="rreport meeting"><div class="rrbar"><button type="button" id="rrcopy">複製 Markdown</button><button type="button" id="rrsave">下載 .md</button><button type="button" data-rlist="1">證據清單</button></div>
+    <div class="mdoc">${m.html}</div><pre id="rrmd" hidden>${esc(m.md)}</pre></div>`;
 }
 
 function timeline(d, D) {
@@ -452,7 +531,7 @@ function render(el, m) {
   }
   const D = derive(d);
   cur = { d, D };
-  const body = ui.mode === "time" ? timeline(d, D) : ui.mode === "cited" ? citedView(d, D) : ui.mode === "map" ? overview(d, D) : ui.mode === "report" ? reportView(d, D, p.label) : topic(d, D);
+  const body = ui.mode === "time" ? timeline(d, D) : ui.mode === "cited" ? citedView(d, D) : ui.mode === "map" ? overview(d, D) : ui.mode === "report" ? reportView(d, D, p.label) : ui.mode === "now" ? statusBoard(d, D) : topic(d, D);
   if (paint(el, head + `<div class="research">${body}</div>`, d.fp)) {
     globalThis.requestAnimationFrame?.(() => markClamped(el));
     setTimeout(() => markClamped(el), 50);
@@ -514,6 +593,8 @@ function wire(el) {
   el.addEventListener("click", async (ev) => {
     if (!mine(ev)) return;
     const t = ev.target;
+    const rl = t.closest("[data-rlist]");
+    if (rl) { ui.reportList = rl.dataset.rlist === "1"; rerender(); return; }
     const mode = t.closest("[data-mode]");
     if (mode) { ui.mode = mode.dataset.mode; lsSet("wd.research.mode", ui.mode); rerender(); return; }
     if (t.closest("#rrcopy")) {

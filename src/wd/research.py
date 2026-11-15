@@ -68,6 +68,7 @@ class ResearchSource:
     format: str = "prereg-json"
     overlay: Path | None = None
     fields: dict[str, list[str]] = field(default_factory=dict)
+    forbidden: list[str] = field(default_factory=list)  # words reports must not use (the project's own non-claims)
 
     def field_names(self, key: str) -> list[str]:
         return self.fields.get(key) or DEFAULT_FIELDS[key]
@@ -93,20 +94,35 @@ def _get(d: dict, names: list[str]):
 
 
 def outcome(status: str, verdict: str) -> str:
-    """pass | fail | inconclusive | void | running | open | other."""
+    """pass | fail | inconclusive | void | running | open | other.
+    The verdict wins over the status field: records keep `status: pass` after a
+    later FAIL verdict, and the verdict is what the decision rules produced."""
     s, v = status.lower(), verdict.lower()
+    if s.startswith("void"):
+        return "void"
     if "no-verdict" in v or "未定" in v or "inconclusive" in v:
         return "inconclusive"
-    for prefix, out in (("void", "void"), ("running", "running"), ("registered", "open"), ("open", "open"),
-                        ("pass", "pass"), ("adopted", "pass"), ("fail", "fail"), ("adjudicated_fail", "fail"),
-                        ("gate_failed", "fail")):
-        if s.startswith(prefix):
-            return out
     if v.startswith("pass"):
         return "pass"
     if v.startswith("fail"):
         return "fail"
+    for prefix, out in (("running", "running"), ("registered", "open"), ("open", "open"),
+                        ("pass", "pass"), ("adopted", "pass"), ("fail", "fail"), ("adjudicated_fail", "fail"),
+                        ("gate_failed", "fail")):
+        if s.startswith(prefix):
+            return out
     return "other"
+
+
+def addenda(d: dict) -> list[tuple[str, str]]:
+    """Later notes appended to a record (addendum_*, second/third adjudication,
+    corrections), in file order. Results written after the run often live here."""
+    out = []
+    for k, v in d.items():
+        kl = k.lower()
+        if kl.startswith(("addendum", "second_adjudication", "third_adjudication", "correction", "amendment", "caveat")) and v not in (None, "", [], {}):
+            out.append((k, _flat(v, 4000)))
+    return out
 
 
 def _num(v):
@@ -135,6 +151,17 @@ def gauge(criterion, result, noise) -> dict | None:
         nf = None
     return {"metric": _flat(criterion.get("metric"), 120), "dir": "down" if d.startswith("down") or d == "lower" else "up",
             "th": float(th), "val": float(val), "noise": abs(nf) if nf is not None else None}
+
+
+def _checked_gauge(gz: dict | None, out: str) -> dict | None:
+    """Flag a gauge whose position contradicts the verdict: the rule had more
+    than one condition (or `val` means something else), so the bar would lie."""
+    if not gz:
+        return gz
+    crossed = gz["val"] >= gz["th"] if gz["dir"] == "up" else gz["val"] <= gz["th"]
+    if (out == "pass" and not crossed) or (out == "fail" and crossed):
+        gz["multi"] = True
+    return gz
 
 
 def family_of(code: str) -> str:
@@ -183,6 +210,7 @@ def normalise(d: dict, src: ResearchSource) -> dict:
         if (newer, rid) not in seen:
             seen.add((newer, rid))
             edges.append({"from": newer, "to": rid, "type": "supersedes", "by": "field"})
+    notes = addenda(d)
     whole = json.dumps(d, ensure_ascii=False)
     mentions = sorted({x for x in RID.findall(whole) if x != rid and (rid, x) not in seen})
 
@@ -202,10 +230,34 @@ def normalise(d: dict, src: ResearchSource) -> dict:
         "lose": _flat(g("lose"), 400),
         "expected": _flat(g("expected"), 400),
         "result": result,
-        "gauge": gauge(g("criterion"), res, g("noise")),
+        "latest_note": (_flat(f"{notes[-1][0]}：{notes[-1][1]}", 700) if notes else ""),
+        "n_notes": len(notes),
+        "gauge": _checked_gauge(gauge(g("criterion"), res, g("noise")), outcome(status, verdict)),
         "edges": edges,
         "mentions": mentions,
     }
+
+
+def _cited(xs) -> list[dict]:
+    return [{"text": _flat(x.get("text"), 200), "cites": [c for c in x.get("cites", []) if isinstance(c, str)][:8]}
+            for x in xs or [] if isinstance(x, dict) and x.get("text")][:4]
+
+
+def _question(q: dict) -> dict:
+    """An overlay question, keeping the structured claim fields."""
+    out = {k: _flat(q.get(k), 500) for k in ("id", "title", "answer", "state", "parent", "kind", "note", "by", "stuck", "next", "decision")}
+    out["template"] = bool(q.get("template"))
+    for k in ("holds", "fails", "unknown"):
+        out[k] = _cited(q.get(k))
+    out["findings"] = [{
+        "id": _flat(f.get("id"), 60), "statement": _flat(f.get("statement"), 240), "basis": _flat(f.get("basis"), 300),
+        "so_what": _flat(f.get("so_what"), 240), "change_if": _flat(f.get("change_if"), 240),
+        "confidence": _flat(f.get("confidence"), 60), "warnings": [_flat(w, 120) for w in f.get("warnings", []) if isinstance(w, str)][:6],
+        "by": _flat(f.get("by"), 10),
+        "cites": [{"id": _flat(c.get("id"), 40), "role": _flat(c.get("role"), 10), "quote": _flat(c.get("quote"), 240)}
+                  for c in f.get("cites", []) if isinstance(c, dict)][:8],
+    } for f in q.get("findings", []) if isinstance(f, dict)][:4]
+    return out
 
 
 class ResearchProject:
@@ -232,7 +284,7 @@ class ResearchProject:
 
     def fingerprint(self) -> str:
         h = hashlib.sha1()
-        for p in [*self._files(), self.overlay_path]:
+        for p in [*self._files(), self.overlay_path, self.overlay_path.with_name(self.overlay_path.stem + ".report.json")]:
             try:
                 st = p.stat()
                 h.update(f"{p.name}:{st.st_mtime_ns}:{st.st_ctime_ns}:{st.st_ino}:{st.st_size};".encode())
@@ -280,17 +332,20 @@ class ResearchProject:
             if self.overlay_path.stat().st_size > MAX_FILE * 4:
                 raise ValueError("overlay too large")
             ov = json.loads(self.overlay_path.read_text(encoding="utf-8"))
-            goals = [{k: _flat(g.get(k), 400) for k in ("id", "title", "bar", "answer", "state")}
+            goals = [{**{k: _flat(g.get(k), 400) for k in ("id", "title", "bar", "answer", "state")},
+                      "answer_cites": [c for c in g.get("answer_cites", []) if isinstance(c, str)][:8]}
                      for g in ov.get("goals", []) if isinstance(g, dict) and g.get("id")]
-            questions = [{k: _flat(q.get(k), 500) for k in ("id", "title", "answer", "state", "parent", "kind", "note", "by")}
-                         for q in ov.get("questions", []) if isinstance(q, dict) and q.get("id")]
+            questions = [_question(q) for q in ov.get("questions", []) if isinstance(q, dict) and q.get("id")]
             per = ov.get("records", {}) or {}
             for r in records:
                 o = per.get(r["id"])
                 if isinstance(o, dict):
                     r["question"] = str(o.get("question") or "")
                     r["why_short"] = _flat(o.get("why"), 200)
-                    r["result_short"] = _flat(o.get("result"), 200)
+                    r["result_short"] = _flat(o.get("result"), 240)
+                    r["name"] = _flat(o.get("name"), 40)
+                    r["level"] = int(o.get("level") or 0) if str(o.get("level") or "0").isdigit() else 0
+                    r["n"] = int(o.get("n") or 0) if str(o.get("n") or "0").isdigit() else 0
             for e in ov.get("edges", []):
                 if isinstance(e, dict) and e.get("from") in ids and e.get("to") in ids and e.get("type") in EDGE_TYPES:
                     edges.append({"from": e["from"], "to": e["to"], "type": e["type"],
@@ -299,6 +354,16 @@ class ResearchProject:
             pass
         except Exception as e:
             errors.append(f"overlay: {e}")
+        report = None
+        rp = self.overlay_path.with_name(self.overlay_path.stem + ".report.json")
+        try:
+            if rp.stat().st_size <= MAX_FILE:
+                report = json.loads(rp.read_text(encoding="utf-8"))
+                report = report if isinstance(report, dict) else None
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            errors.append(f"report: {e}")
         # field edges pointing at unknown ids are kept out of the graph
         for r in records:
             r["edges"] = [e for e in r["edges"] if e["from"] in ids and e["to"] in ids]
@@ -310,6 +375,7 @@ class ResearchProject:
             "records": records,
             "goals": goals,
             "questions": questions,
+            "report": report,
             "edges": edges,
             "errors": errors[:50],
         }

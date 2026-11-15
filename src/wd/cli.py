@@ -134,6 +134,8 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--profile", help="profile label whose Claude account to use (default: this hub's realm)")
     rp.add_argument("--structure", help="an existing outline of goals/routes to build on (e.g. a colleague's slides as text)")
     rp.add_argument("--questions-only", action="store_true")
+    rp.add_argument("--synth-model", default="", help="model for the structure/claims/report stages (default: --model)")
+    rp.add_argument("--stages", default="all", help="comma list of records,structure,claims,report (default: all)")
 
     # experiments ------------------------------------------------------------
     e = sub.add_parser("exp", help="experiments").add_subparsers(dest="sub", required=True)
@@ -259,7 +261,7 @@ def dispatch(cfg: cfgmod.Config, args) -> int:
     if args.cmd == "research" and args.sub == "propose":
         from wd import research_propose
 
-        return research_propose.main(cfg, args.name, args.model, args.batch, args.context, args.profile, args.questions_only, args.structure)
+        return research_propose.main(cfg, args.name, args.model, args.batch, args.context, args.profile, args.questions_only, args.structure, args.synth_model, args.stages)
 
     session = _session_ref(cfg)
     if args.cmd == "exp" and args.sub == "new":
