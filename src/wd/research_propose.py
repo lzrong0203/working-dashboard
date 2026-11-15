@@ -38,18 +38,33 @@ SYSTEM = (
 
 Q_SCHEMA = {
     "type": "object",
-    "properties": {"questions": {"type": "array", "items": {
-        "type": "object",
-        "properties": {
-            "id": {"type": "string", "pattern": "^q-[a-z0-9-]{2,40}$"},
-            "title": {"type": "string"},
-            "answer": {"type": "string"},
-            "state": {"type": "string", "enum": ["supported", "refuted", "mixed", "open"]},
-            "members": {"type": "array", "items": {"type": "string"}},
-        },
-        "required": ["id", "title", "answer", "state", "members"],
-    }}},
-    "required": ["questions"],
+    "properties": {
+        "goals": {"type": "array", "items": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "pattern": "^g-[a-z0-9-]{2,40}$"},
+                "title": {"type": "string"},
+                "bar": {"type": "string"},
+                "answer": {"type": "string"},
+                "state": {"type": "string", "enum": ["supported", "refuted", "mixed", "open"]},
+            },
+            "required": ["id", "title", "bar", "answer", "state"],
+        }},
+        "questions": {"type": "array", "items": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "pattern": "^q-[a-z0-9-]{2,40}$"},
+                "parent": {"type": "string"},
+                "kind": {"type": "string", "enum": ["route", "question", "cross"]},
+                "title": {"type": "string"},
+                "answer": {"type": "string"},
+                "state": {"type": "string", "enum": ["supported", "refuted", "mixed", "open"]},
+                "members": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["id", "parent", "kind", "title", "answer", "state", "members"],
+        }},
+    },
+    "required": ["goals", "questions"],
 }
 
 R_SCHEMA = {
@@ -77,13 +92,20 @@ R_SCHEMA = {
 }
 
 Q_PROMPT = """下面是一個研究專案的全部實驗登記索引（每行：編號｜日期｜代號｜結果｜標題｜判定）。
-{context}
-請整理出 8 到 20 個「研究問題」——這些實驗到底在回答哪些問題。要求：
-- 每個問題用一句問句寫（例：「模擬結果對得上真實量測嗎？」），不要用代號當標題。
-- answer：根據這些登記的結果，目前的答案（1–2 句，說清楚是成立、不成立還是還不知道）。
-- state：supported（大致成立）、refuted（大致不成立）、mixed（有成立也有不成立）、open（還沒有答案）。
-- members：屬於這個問題的登記編號。每筆登記最多屬於一個問題；規則修訂、工具校正這類也可以自成一個問題。
-- id：q- 加英文小寫短名（例：q-sim-to-real）。
+{context}{structure}
+請把這些實驗整理成兩層：
+1. goals（2–5 個）：研究的大目標、命題或階段（例：「贏過水分子競爭的 IPA 吸附」「預測 IPA 吸附量要多準」）。
+   bar：怎樣才算達成，盡量具體、有數字。answer、state：目前整體進展。
+   另外固定加一個 id 為 g-cross 的目標，標題「橫向：方法與資料問題」，放影響很多條線的方法、工具、資料品質與判定規則。
+2. questions（8–24 個）：每個目標底下的問題或途徑。
+   - parent：所屬目標的 id。
+   - kind：route（達成目標的一條途徑／假設路線）、question（要回答的問題）、cross（放在 g-cross 底下的方法類問題）。
+   - title：一句話；途徑寫成「途徑：…」的短句，問題寫成問句。不要用代號當標題。
+   - answer：根據這些登記的結果，目前的答案（1–2 句，說清楚成立、不成立、還不知道，或卡在哪裡）。
+   - state：supported、refuted、mixed、open。
+   - members：屬於它的登記編號；每筆登記最多屬於一個問題。
+   - id：q- 加英文小寫短名。
+如果上面有提供「既有的路線整理」，它不一定對，但請優先沿用它的目標和途徑名稱，資料不支持的地方在 answer 裡直說。
 
 登記索引：
 {index}
@@ -150,7 +172,7 @@ def call_claude(prompt: str, schema: dict, config_dir: Path, model: str, timeout
 
 
 def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = "sonnet", batch: int = 16,
-            context: Path | None = None, only_questions: bool = False, log=print) -> Path:
+            context: Path | None = None, only_questions: bool = False, log=print, structure: Path | None = None) -> Path:
     proj = ResearchProject(src, data_dir)
     recs = proj.data()["records"]
     raw = {}
@@ -185,20 +207,31 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
     ctx = ""
     if context and context.is_file():
         ctx = "\n專案說明（節錄）：\n" + context.read_text(encoding="utf-8", errors="replace")[:12000] + "\n"
-    log(f"[propose] {len(ids)} records; pass 1: questions")
-    qd = call_claude(Q_PROMPT.format(context=ctx, index=index), Q_SCHEMA, config_dir, model)
+    struct = ""
+    if structure and structure.is_file():
+        struct = "\n既有的路線整理（同事整理，不一定對）：\n" + structure.read_text(encoding="utf-8", errors="replace")[:12000] + "\n"
+    log(f"[propose] {len(ids)} records; pass 1: goals and questions")
+    qd = call_claude(Q_PROMPT.format(context=ctx, structure=struct, index=index), Q_SCHEMA, config_dir, model)
+    goals = []
+    for g in qd.get("goals", []):
+        if re.fullmatch(r"g-[a-z0-9-]{2,40}", str(g.get("id", ""))) and not any(x["id"] == g["id"] for x in goals):
+            goals.append({k: _flat(g.get(k), 400) for k in ("id", "title", "bar", "answer", "state")} | {"by": "ai"})
+    gids = {g["id"] for g in goals}
     questions, member_of = [], {}
     for q in qd.get("questions", []):
         if not re.fullmatch(r"q-[a-z0-9-]{2,40}", str(q.get("id", ""))) or any(x["id"] == q["id"] for x in questions):
             continue
-        questions.append({k: _flat(q.get(k), 400) for k in ("id", "title", "answer", "state")} | {"by": "ai"})
+        entry = {k: _flat(q.get(k), 400) for k in ("id", "title", "answer", "state", "kind")} | {"by": "ai"}
+        entry["parent"] = q.get("parent") if q.get("parent") in gids else ""
+        questions.append(entry)
         for m in q.get("members", []):
             if m in by:
                 member_of.setdefault(m, q["id"])
     qids = {q["id"] for q in questions}
-    overlay = {"questions": questions, "records": {i: {"question": member_of.get(i, "")} for i in ids}, "edges": list(human_edges)}
+    overlay = {"goals": goals, "questions": questions, "records": {i: {"question": member_of.get(i, "")} for i in ids},
+               "edges": list(human_edges)}
     write(overlay)
-    log(f"[propose] {len(questions)} questions")
+    log(f"[propose] {len(goals)} goals, {len(questions)} questions")
     if only_questions:
         return out_path
 
@@ -241,7 +274,8 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
     return out_path
 
 
-def main(cfg, name: str, model: str, batch: int, context: str | None, profile: str | None, only_questions: bool) -> int:
+def main(cfg, name: str, model: str, batch: int, context: str | None, profile: str | None, only_questions: bool,
+         structure: str | None = None) -> int:
     src = next((r for r in cfg.hub.research if r.name == name), None)
     if not src:
         print(f"no [[hub.research]] named {name!r} on this hub", file=sys.stderr)
@@ -251,7 +285,8 @@ def main(cfg, name: str, model: str, batch: int, context: str | None, profile: s
         print("no profile for this hub's realm; pass --profile", file=sys.stderr)
         return 2
     path = propose(src, cfg.hub.data_dir, prof.config_dir, model=model, batch=batch,
-                   context=Path(context).expanduser() if context else None, only_questions=only_questions)
+                   context=Path(context).expanduser() if context else None, only_questions=only_questions,
+                   log=lambda m: print(m, flush=True), structure=Path(structure).expanduser() if structure else None)
     print(f"overlay written: {path}")
     return 0
 

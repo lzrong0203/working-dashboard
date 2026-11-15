@@ -602,8 +602,9 @@ class ResearchTest(unittest.TestCase):
             for r in (a, b):
                 (reg / f"{r['id']}.json").write_text(json.dumps(r, ensure_ascii=False))
             fake = Path(d) / "fake-claude"
-            q = {"questions": [{"id": "q-sampling", "title": "取樣夠嗎？", "answer": "修完就夠", "state": "supported",
-                                "members": [a["id"], b["id"]]}]}
+            q = {"goals": [{"id": "g-method", "title": "方法可信", "bar": "sd ≤ 0.5", "answer": "接近", "state": "mixed"}],
+                 "questions": [{"id": "q-sampling", "parent": "g-method", "kind": "question", "title": "取樣夠嗎？",
+                                "answer": "修完就夠", "state": "supported", "members": [a["id"], b["id"]]}]}
             rr = {"records": [{"id": b["id"], "question": "q-sampling", "why": "修 FOO-1", "result": "過了", "edges": [
                 {"to": "FOO-1", "type": "because", "quote": "FOO-1 的取樣問題要修掉"},      # code -> id, quote ok
                 {"to": a["id"], "type": "uses", "quote": "made-up sentence not in record"},   # dropped
@@ -620,5 +621,6 @@ class ResearchTest(unittest.TestCase):
                 os.environ.pop("WD_CLAUDE") if old is None else os.environ.__setitem__("WD_CLAUDE", old)
             ov = json.loads(path.read_text())
             self.assertEqual([x["id"] for x in ov["questions"]], ["q-sampling"])
+            self.assertEqual((ov["goals"][0]["id"], ov["questions"][0]["parent"]), ("g-method", "g-method"))
             self.assertEqual(ov["records"][b["id"]]["why"], "修 FOO-1")
             self.assertEqual([(e["from"], e["to"], e["type"]) for e in ov["edges"]], [(b["id"], a["id"], "because")])

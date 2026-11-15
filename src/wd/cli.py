@@ -125,6 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--batch", type=int, default=16)
     rp.add_argument("--context", help="extra context file, e.g. the project's README.md")
     rp.add_argument("--profile", help="profile label whose Claude account to use (default: this hub's realm)")
+    rp.add_argument("--structure", help="an existing outline of goals/routes to build on (e.g. a colleague's slides as text)")
     rp.add_argument("--questions-only", action="store_true")
 
     # experiments ------------------------------------------------------------
@@ -240,7 +241,7 @@ def dispatch(cfg: cfgmod.Config, args) -> int:
     if args.cmd == "research" and args.sub == "propose":
         from wd import research_propose
 
-        return research_propose.main(cfg, args.name, args.model, args.batch, args.context, args.profile, args.questions_only)
+        return research_propose.main(cfg, args.name, args.model, args.batch, args.context, args.profile, args.questions_only, args.structure)
 
     session = _session_ref(cfg)
     if args.cmd == "exp" and args.sub == "new":

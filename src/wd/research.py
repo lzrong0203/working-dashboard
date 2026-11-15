@@ -53,6 +53,7 @@ DEFAULT_FIELDS: dict[str, list[str]] = {
     "parent": ["parent", "parents"],
     "superseded_by": ["superseded_by"],
     "original": ["original"],
+    "noise": ["noise_floor", "noise"],
 }
 
 
@@ -103,6 +104,29 @@ def outcome(status: str, verdict: str) -> str:
     if v.startswith("fail"):
         return "fail"
     return "other"
+
+
+def _num(v):
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    m = re.match(r"\s*([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)", str(v or ""))
+    return float(m.group(1)) if m else None
+
+
+def gauge(criterion, result, noise) -> dict | None:
+    """Threshold vs measured value, when both are plain numbers: enough to draw
+    where the result landed relative to the line it had to cross."""
+    if not isinstance(criterion, dict) or not isinstance(result, dict):
+        return None
+    th, val = criterion.get("threshold"), result.get("val")
+    if isinstance(th, bool) or isinstance(val, bool) or not isinstance(th, (int, float)) or not isinstance(val, (int, float)):
+        return None
+    d = str(criterion.get("direction") or "").lower()
+    nf = _num(noise)
+    return {"metric": _flat(criterion.get("metric"), 120), "dir": "down" if d.startswith("down") or d == "lower" else "up",
+            "th": float(th), "val": float(val), "noise": abs(nf) if nf is not None else None}
 
 
 def family_of(code: str) -> str:
@@ -170,6 +194,7 @@ def normalise(d: dict, src: ResearchSource) -> dict:
         "lose": _flat(g("lose"), 400),
         "expected": _flat(g("expected"), 400),
         "result": result,
+        "gauge": gauge(g("criterion"), res, g("noise")),
         "edges": edges,
         "mentions": mentions,
     }
@@ -226,10 +251,13 @@ class ResearchProject:
                 errors.append(f"{p.name}: {e}")
         records.sort(key=lambda r: (r["ts"], r["id"]))
         ids = {r["id"] for r in records}
-        questions, edges = [], []
+        questions, edges, goals = [], [], []
         try:
             ov = json.loads(self.overlay_path.read_text(encoding="utf-8"))
-            questions = [q for q in ov.get("questions", []) if isinstance(q, dict) and q.get("id")]
+            goals = [{k: _flat(g.get(k), 400) for k in ("id", "title", "bar", "answer", "state")}
+                     for g in ov.get("goals", []) if isinstance(g, dict) and g.get("id")]
+            questions = [{k: _flat(q.get(k), 500) for k in ("id", "title", "answer", "state", "parent", "kind", "note", "by")}
+                         for q in ov.get("questions", []) if isinstance(q, dict) and q.get("id")]
             per = ov.get("records", {}) or {}
             for r in records:
                 o = per.get(r["id"])
@@ -254,6 +282,7 @@ class ResearchProject:
             "label": self.src.label or self.src.name,
             "project_dir": self.src.path.parent.name,
             "records": records,
+            "goals": goals,
             "questions": questions,
             "edges": edges,
             "errors": errors[:50],
