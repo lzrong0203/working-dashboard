@@ -12,12 +12,14 @@ export const LOOKS = [
   { id: "studio", label: "像素工作室" },
   { id: "flap", label: "機場看板" },
   { id: "kanban", label: "便利貼" },
+  { id: "office", label: "辦公室小人" },
 ];
 const WORDS = {
   desk: { waiting: "等你", busy: "執行中", idle: "閒置", gone: "已結束", unknown: "未知" },
   studio: { waiting: "舉手中", busy: "打字中", idle: "打瞌睡", gone: "下班了", unknown: "未知" },
   flap: { waiting: "請洽櫃台", busy: "飛行中", idle: "已抵達", gone: "已結束", unknown: "未知" },
   kanban: { waiting: "等你", busy: "進行中", idle: "閒置", gone: "完成", unknown: "未知" },
+  office: { waiting: "舉手找你", busy: "埋頭工作", idle: "休息中", gone: "下班了", unknown: "未知" },
 };
 export const FORMAL = WORDS.desk;
 

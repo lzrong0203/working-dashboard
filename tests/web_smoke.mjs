@@ -71,7 +71,7 @@ await new Promise((r) => setTimeout(r, 20));
 if (!/data-open-realm="work"[^>]*>開啟 ↗ <small>Work Chrome/.test(els.view.innerHTML)) fail("work open link not routed to its browser profile");
 
 // every look renders the same facts, escaped, with a state word
-for (const look of ["desk", "studio", "flap", "kanban"]) {
+for (const look of ["desk", "studio", "flap", "kanban", "office"]) {
   setLook(look);
   render();
   await new Promise((r) => setTimeout(r, 20));
@@ -80,6 +80,7 @@ for (const look of ["desk", "studio", "flap", "kanban"]) {
   if (!html.includes("n1") && !html.includes(">n<")) fail(`${look}: waiting session missing`);
   if (!html.includes("n9") && !html.includes(">9<")) fail(`${look}: work session missing`);
   if (look === "studio" && !html.includes('class="scene"')) fail("studio: no pixel scene");
+  if (look === "office" && !html.includes("odesk-art")) fail("office: no desks");
   if (look === "flap" && !html.includes("DEPARTURES")) fail("flap: no board");
   if (look === "kanban" && !html.includes('class="cork"')) fail("kanban: no cork board");
   if ((look === "desk" || look === "studio") && !html.includes('class="strip"')) fail(`${look}: no status strip`);

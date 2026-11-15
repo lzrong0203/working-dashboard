@@ -2,7 +2,7 @@
 // One data model, four looks (WD.look): desk, studio, flap, kanban.
 // Every state shows its word plus a second cue (shape, pose, lamp, column);
 // colour is never the only signal.
-import { WD, esc, ago, dur, ikey, opener, word, FORMAL, hash, strip } from "../core.js";
+import { WD, esc, ago, dur, ikey, opener, word, FORMAL, hash, strip, lsGet, lsSet } from "../core.js";
 
 const STALE_S = 180; // a source silent this long is probably offline
 const base = (p) => (p || "").split("/").filter(Boolean).pop() || p || "";
@@ -237,6 +237,81 @@ function renderKanban(ctx) {
     </section>`).join("")}</div>${goneBlock(ctx)}`;
 }
 
+// ---- office: every machine is a room, every session a person at a desk -------
+// The pose is the status: typing (busy), hand up with a bubble (waiting),
+// coffee (just finished), asleep on the desk (idle a while), an empty chair
+// with a jacket (parked for hours). Click a person for their full card.
+let officeSel = lsGet("wd.office.sel") || "";
+const OFFICE_PARK_MS = 12 * 3600e3;
+function pose(s, now) {
+  if (s.status === "waiting") return "wait";
+  if (s.status === "busy") return "type";
+  if (s.status === "idle") {
+    const age = now - (s.status_since || now);
+    if (age > OFFICE_PARK_MS) return "away";
+    return (s.attention?.level || 0) >= 2 ? "coffee" : "sleep";
+  }
+  return "type";
+}
+function figure(k, extra = "") {
+  const shirt = SHIRTS[k % SHIRTS.length], hair = HAIRS[(k >>> 5) % HAIRS.length], skin = SKINS[(k >>> 9) % SKINS.length];
+  const style = (k >>> 12) % 4, glasses = ((k >>> 15) & 3) === 0;
+  const back = style === 1 ? `<rect x="-10.5" y="-8" width="21" height="20" rx="8" fill="${hair}"/>` : "";
+  const top = `<ellipse cx="0" cy="-6" rx="10.5" ry="6.5" fill="${hair}"/>` +
+    (style === 2 ? `<circle cx="0" cy="-13" r="4.2" fill="${hair}"/>` : style === 3 ? `<path d="M-10 -5 Q-4 -12 9 -8 L10 -3 Q2 -8 -10 -2Z" fill="${hair}"/>` : "");
+  const eyes = glasses
+    ? `<circle cx="-3.6" cy="1" r="2.6" fill="none" stroke="#212529" stroke-width="1"/><circle cx="3.6" cy="1" r="2.6" fill="none" stroke="#212529" stroke-width="1"/><line x1="-1" y1="1" x2="1" y2="1" stroke="#212529" stroke-width="1"/>`
+    : `<circle cx="-3.4" cy="1" r="1.1" fill="#212529"/><circle cx="3.4" cy="1" r="1.1" fill="#212529"/>`;
+  const body = `<rect x="-12" y="11" width="24" height="24" rx="10" fill="${shirt}"/>`;
+  const head = (closed) => `${back}<circle r="10" fill="${skin}"/>${top}${closed ? `<path d="M-5.5 1.5 q2 1.6 4 0 M1.5 1.5 q2 1.6 4 0" fill="none" stroke="#212529" stroke-width="1"/>` : eyes}`;
+  return { shirt, skin, body, head, svg: `${body}${head(false)}${extra}` };
+}
+function deskArt(s, now) {
+  const k = hash(nameOf(s).toLowerCase()), p = pose(s, now), f = figure(k);
+  const screen = p === "away" || p === "sleep" ? "#1f2330" : p === "wait" ? "#fff4e6" : p === "coffee" ? "#d0ebff" : "#dbe4ff";
+  const parts = [`<ellipse cx="62" cy="93" rx="50" ry="5" class="shadow"/>`];
+  // chair behind the person
+  parts.push(`<rect x="30" y="42" width="30" height="32" rx="8" class="chair"/><rect x="42" y="74" width="5" height="12" class="chair"/><rect x="32" y="85" width="26" height="4" rx="2" class="chair"/>`);
+  if (p === "away") parts.push(`<path d="M31 44 Q45 36 59 44 L57 70 Q45 74 33 70Z" fill="${f.shirt}" opacity=".9"/><path d="M45 40 L45 70" stroke="rgba(0,0,0,.2)"/>`);
+  if (p === "type" || p === "coffee") parts.push(`<g transform="translate(46 38)">${f.svg}</g>`);
+  if (p === "wait") parts.push(`<g transform="translate(40 30)">${f.svg}</g><g class="hand"><line x1="30" y1="44" x2="24" y2="16" stroke="${f.shirt}" stroke-width="6" stroke-linecap="round"/><circle cx="24" cy="13" r="4" fill="${f.skin}"/></g>`);
+  if (p === "sleep") parts.push(`<g transform="translate(46 40)">${f.body}</g><line x1="54" y1="58" x2="70" y2="60" stroke="${f.skin}" stroke-width="5" stroke-linecap="round"/><g transform="translate(63 53) rotate(-18)">${f.head(true)}</g><g class="zz"><text x="74" y="24">z</text><text x="81" y="17">z</text></g>`);
+  // desk, monitor, keyboard
+  parts.push(`<rect x="52" y="62" width="64" height="7" rx="2" class="desk"/><rect x="56" y="69" width="4" height="22" class="desk"/><rect x="108" y="69" width="4" height="22" class="desk"/>`);
+  parts.push(`<rect x="86" y="52" width="4" height="10" class="mon"/><rect x="70" y="27" width="36" height="26" rx="3" class="mon"/><rect x="72" y="29" width="32" height="22" rx="1.5" fill="${screen}"/>`);
+  if (p === "type") parts.push(`<g class="code"><rect x="75" y="33" width="16" height="2" class="c1"/><rect x="75" y="38" width="22" height="2" class="c2"/><rect x="75" y="43" width="12" height="2" class="c3"/></g><rect x="66" y="59" width="18" height="3" rx="1" class="kb"/><g class="arms"><line x1="54" y1="56" x2="70" y2="60" stroke="${f.skin}" stroke-width="4" stroke-linecap="round"/></g>`);
+  if (p === "wait") parts.push(`<text x="88" y="45" class="bang">!</text>`);
+  if (p === "coffee") parts.push(`<rect x="60" y="53" width="8" height="9" rx="2" class="mug"/><path d="M68 55 q4 2 0 5" fill="none" class="mug-h"/><g class="steam"><path d="M62 50 q-2 -4 0 -7"/><path d="M66 50 q2 -4 0 -7"/></g><line x1="54" y1="56" x2="61" y2="57" stroke="${f.skin}" stroke-width="4" stroke-linecap="round"/>`);
+  if (p === "away") parts.push(`<rect x="60" y="56" width="10" height="6" rx="1" class="note"/>`);
+  return `<svg class="odesk-art" viewBox="0 0 124 100" aria-hidden="true">${parts.join("")}</svg>`;
+}
+function renderOffice(ctx) {
+  const now = ctx.now;
+  if (officeSel && !ctx.live.some((s) => s.key === officeSel)) officeSel = "";
+  const sel = ctx.live.find((s) => s.key === officeSel);
+  const needs = ctx.live.filter((s) => s.attention.level >= 2);
+  const reception = needs.length ? `<div class="reception"><b>需要你</b>${needs.map((s) => `<button class="rchip st-${esc(s.status)}" data-desk="${esc(s.key)}">${esc(nameOf(s))}<span>${esc(s.attention.reason || word(s.status))}</span></button>`).join("")}</div>` : "";
+  const rooms = ctx.hosts.map((h) => {
+    const ss = ctx.live.filter((s) => s.host === h).sort((a, b) => b.attention.level - a.attention.level || nameOf(a).localeCompare(nameOf(b)));
+    if (!ss.length) return "";
+    return `
+    <section class="room">
+      ${hostHeader(h, ctx)}
+      <div class="wall" aria-hidden="true"><i class="win"></i><i class="win"></i><i class="clock"></i><i class="plant"></i></div>
+      <div class="floor">${ss.map((s) => {
+        const p = pose(s, now), d = dur(s.status_since, now);
+        return `
+        <button class="odesk p-${p} st-${esc(s.status)}${s.key === officeSel ? " on" : ""}${isStale(s) ? " stale" : ""}" data-desk="${esc(s.key)}" title="${esc(s.attention?.reason || FORMAL[s.status] || "")}">
+          ${p === "wait" ? `<span class="bubble">等你 ${esc(d.n)} ${esc(d.u)}</span>` : ""}
+          ${deskArt(s, now)}
+          <span class="plate"><b>${esc(nameOf(s))}</b><span>${esc(p === "away" ? "外出" : word(s.status))} · ${esc(d.n)}${esc(d.u)}</span></span>
+        </button>`;
+      }).join("")}</div>
+    </section>`;
+  }).join("");
+  return `${reception}<div class="office${sel ? " has-sel" : ""}"><div class="rooms">${rooms}</div>${sel ? `<aside class="odetail">${card(sel, ctx)}</aside>` : `<aside class="odetail empty"><p>點一個人，看他在做什麼。</p></aside>`}</div>`;
+}
+
 WD.register({
   id: "sessions",
   label: "Sessions",
@@ -252,7 +327,18 @@ WD.register({
       hosts: [...new Set([...m.sources.map((s) => s.host), ...live.map((s) => s.host)])].sort(),
     };
     const banner = m.offline.length ? `<p class="banner">暫時連不上 ${m.offline.map((s) => esc(s.state?.realm || s.url.replace(/^https?:\/\//, ""))).join("、")}，自動重試中（換網路後通道約 1 分鐘內會自己接回；一直沒好再執行 <code>wd view</code>）</p>` : "";
-    const body = WD.look === "flap" ? renderFlap(ctx) : WD.look === "kanban" ? renderKanban(ctx) : renderCards(ctx);
+    const body = WD.look === "flap" ? renderFlap(ctx) : WD.look === "kanban" ? renderKanban(ctx) : WD.look === "office" ? renderOffice(ctx) : renderCards(ctx);
     el.innerHTML = banner + body;
+    if (!el._officeWired && el.addEventListener) {  // one delegated listener; survives re-renders
+      el._officeWired = true;
+      el.addEventListener("click", (ev) => {
+        const b = ev.target.closest?.("[data-desk]");
+        if (!b || WD.look !== "office" || ev.target.closest("a")) return;
+        officeSel = officeSel === b.dataset.desk ? "" : b.dataset.desk;
+        lsSet("wd.office.sel", officeSel);
+        WD.rerender?.();
+        if (officeSel && window.innerWidth < 900) setTimeout(() => document.querySelector(".odetail")?.scrollIntoView({ block: "nearest", behavior: "smooth" }), 40);
+      });
+    }
   },
 });

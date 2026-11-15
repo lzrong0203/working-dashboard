@@ -7,7 +7,7 @@
   <script>
     // pick the look before first paint: #look in the URL, else the last choice
     (function () {
-      var L = ["desk", "studio", "flap", "kanban"], h = location.hash.slice(1), s = null;
+      var L = ["desk", "studio", "flap", "kanban", "office"], h = location.hash.slice(1), s = null;
       try { s = localStorage.getItem("wd.look"); } catch (e) {}
       document.documentElement.dataset.look = L.indexOf(h) >= 0 ? h : (L.indexOf(s) >= 0 ? s : "desk");
     })();
