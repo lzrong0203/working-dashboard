@@ -31,7 +31,10 @@ def build_envelopes(cfg: cfgmod.Config, collectors: dict[str, ClaudeCollector]) 
             col = collectors[ident] = ClaudeCollector(p.config_dir, cfg.host, p.label, p.realm)
         send_mode = cfg.realm(p.realm).send
         sessions = [redact(s, send_mode).to_dict() for s in col.collect()]
+        acct = col.account() if send_mode != "minimal" else {}
         envs.append({
+            "account": acct.get("email", ""),
+            "account_org": acct.get("org", ""),
             "v": 1,
             "host": cfg.host,
             "profile": p.label,
@@ -49,6 +52,10 @@ def digest(env: dict) -> str:
 
 
 def run(cfg: cfgmod.Config, once: bool = False, print_only: bool = False) -> int:
+    if not (once or print_only):
+        from wd import opener
+
+        opener.start(cfg)  # no-op unless [view.browser_profiles] is configured
     collectors: dict[str, ClaudeCollector] = {}
     last_digest: dict[str, str] = {}
     last_sent: dict[str, float] = {}

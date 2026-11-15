@@ -72,12 +72,27 @@ class Hub:
 
 
 @dataclass
+class View:
+    """Viewer-side settings (the machine where you open the board)."""
+
+    # local helper that opens claude.ai links in the right browser profile per realm
+    opener_port: int = 8739
+    browser: str = "Google Chrome"
+    # realm -> browser profile directory, e.g. {"work": "Profile 2", "personal": "Default"}
+    browser_profiles: dict[str, str] = field(default_factory=dict)
+    # optional realm -> label shown on the board's open buttons (default: the
+    # browser profile's own display name)
+    browser_labels: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
 class Config:
     host: str
     profiles: list[Profile]
     realms: dict[str, Realm]
     hub: Hub
     home: Path
+    view: View = field(default_factory=View)
     interval_s: float = 10.0
     heartbeat_s: float = 60.0
     path: Path | None = None
@@ -171,7 +186,16 @@ def load(path: str | Path | None = None) -> Config:
         git_autocommit=bool(h.get("git_autocommit", True)),
     )
 
+    v = raw.get("view", {})
+    view = View(
+        opener_port=int(v.get("opener_port", 8739)),
+        browser=str(v.get("browser", "Google Chrome")),
+        browser_profiles={str(k): str(val) for k, val in (v.get("browser_profiles") or {}).items()},
+        browser_labels={str(k): str(val) for k, val in (v.get("browser_labels") or {}).items()},
+    )
+
     return Config(
+        view=view,
         host=raw.get("host") or socket.gethostname().split(".")[0],
         profiles=profiles,
         realms=realms,

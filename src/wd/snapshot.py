@@ -18,7 +18,7 @@ SUMMARY_MAX = 600
 PROMPT_MAX = 240
 
 # Fields dropped when a realm is configured with send = "minimal".
-CONTENT_FIELDS = ("cwd", "git_branch", "ai_title", "away_summary", "last_prompt", "tmux", "bridge_session_id")
+CONTENT_FIELDS = ("cwd", "git_branch", "ai_title", "away_summary", "last_prompt", "tmux", "bridge_session_id", "account", "account_org")
 
 
 @dataclass
@@ -43,6 +43,8 @@ class SessionSnap:
     away_summary: str = ""
     away_summary_at: int = 0  # epoch ms
     last_prompt: str = ""
+    account: str = ""  # Claude login of this profile (email)
+    account_org: str = ""
     linked_items: list[str] = field(default_factory=list)
 
     @property

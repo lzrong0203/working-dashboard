@@ -25,3 +25,25 @@ export function ago(ms, now = Date.now()) {
   if (s < 86400 * 2) return `${(s / 3600).toFixed(s < 36000 ? 1 : 0)} 小時`;
   return `${Math.round(s / 86400)} 天`;
 }
+
+// Optional helper on the viewing machine that opens claude.ai links in the
+// browser profile configured for each realm (see wd/opener.py).
+export const opener = { base: `http://127.0.0.1:${lsGet("wd.opener_port") || 8739}`, realms: null };
+
+export async function probeOpener() {
+  try {
+    const r = await fetch(`${opener.base}/config`);
+    const j = await r.json();
+    opener.realms = j.ok ? j.realms : null;
+  } catch { opener.realms = null; }
+  return opener.realms;
+}
+
+export async function openInProfile(realm, url) {
+  const r = await fetch(`${opener.base}/open`, {
+    method: "POST", headers: { "Content-Type": "application/json", "X-WD-Open": "1" },
+    body: JSON.stringify({ realm, url }),
+  });
+  const j = await r.json();
+  if (!j.ok) throw new Error(j.error || "open failed");
+}

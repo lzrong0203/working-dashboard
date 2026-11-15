@@ -348,3 +348,44 @@ class GuardTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OpenerTest(unittest.TestCase):
+    def test_guards(self):
+        import http.client
+        import socket as so
+
+        from wd import opener
+
+        with so.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        f = Path(tempfile.mkdtemp()) / "c.toml"
+        f.write_text(f'[view]\nopener_port = {port}\n[view.browser_profiles]\nwork = "Profile 2"\n')
+        cfg = cfgmod.load(f)
+        launched = []
+        orig = opener.subprocess.Popen
+        opener.subprocess.Popen = lambda cmd, **kw: launched.append(cmd)
+        httpd = opener.start(cfg)
+        try:
+            def req(method, path, body=None, headers=None):
+                c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                c.request(method, path, body=json.dumps(body) if body else None, headers={"Host": f"127.0.0.1:{port}", **(headers or {})})
+                r = c.getresponse()
+                return r.status, json.loads(r.read() or b"{}")
+
+            self.assertEqual(req("GET", "/config")[1]["realms"]["work"]["profile"], "Profile 2")
+            self.assertEqual(req("GET", "/config", headers={"Host": "evil.example"})[0], 403)
+            ok_body = {"realm": "work", "url": "https://claude.ai/code/session_x"}
+            self.assertEqual(req("POST", "/open", ok_body)[0], 403)  # missing X-WD-Open
+            h = {"X-WD-Open": "1", "Content-Type": "application/json"}
+            self.assertEqual(req("POST", "/open", ok_body, {**h, "Origin": "https://evil.example"})[0], 403)
+            self.assertEqual(req("POST", "/open", {"realm": "work", "url": "https://evil.example/"}, h)[0], 400)
+            self.assertEqual(req("POST", "/open", {"realm": "personal", "url": ok_body["url"]}, h)[0], 404)
+            self.assertEqual(req("POST", "/open", ok_body, h)[0], 200)
+            self.assertEqual(len(launched), 1)
+            self.assertIn("--profile-directory=Profile 2", launched[0])
+            self.assertEqual(launched[0][-1], ok_body["url"])
+        finally:
+            httpd.shutdown()
+            opener.subprocess.Popen = orig

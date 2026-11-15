@@ -10,7 +10,7 @@ const web = path.join(here, "..", "src", "wd", "web");
 
 const els = {};
 const el = (id) => (els[id] ??= { id, innerHTML: "", textContent: "", querySelectorAll: () => [] });
-globalThis.document = { getElementById: el, title: "" };
+globalThis.document = { getElementById: el, title: "", addEventListener: () => {} };
 globalThis.localStorage = { getItem: () => null, setItem: () => {} };
 globalThis.requestAnimationFrame = (fn) => setTimeout(fn, 0);
 globalThis.location = { origin: "http://127.0.0.1:8740" };
@@ -36,12 +36,16 @@ const states = {
   },
   "http://127.0.0.1:8741": {
     realm: "work", hub: { peers: [] },
-    sessions: [sess("work", 9, "idle", 0)], sources: [{ host: "h", profile: "work", age_s: 5 }], events: [], item_errors: [],
+    sessions: [sess("work", 9, "idle", 0, { bridge_session_id: "session_w9", account: "me@corp.example" })],
+    sources: [{ host: "h", profile: "work", age_s: 5, account: "me@corp.example", account_org: "Corp" }], events: [], item_errors: [],
     items: [{ id: "a", type: "experiment", title: "Work A (same id, other realm)", status: "running", edges: [{ type: "derived_from", to: "b" }] },
             { id: "b", type: "experiment", title: "Work B", status: "running" }],
   },
 };
 globalThis.fetch = async (url) => {
+  if (url === "http://127.0.0.1:8739/config") {
+    return { json: async () => ({ ok: true, realms: { work: { profile: "Profile 2", label: "Work Chrome" } } }) };
+  }
   const base = url.replace(/\/api\/state$/, "");
   if (!states[base]) throw new Error(`no fixture for ${url}`);
   return { json: async () => structuredClone(states[base]) };
@@ -60,6 +64,11 @@ if (!sessionsHtml.includes("n9")) fail("work realm session (peer hub) missing");
 if (sessionsHtml.includes("<b>xss?</b>")) fail("ai_title not escaped");
 if (!sessionsHtml.includes("Exp A")) fail("linked item title missing");
 if (!els.counts.innerHTML.includes("<b>1</b>")) fail("urgent count wrong");
+if (!sessionsHtml.includes("me@corp")) fail("account not shown on host header");
+await new Promise((r) => setTimeout(r, 50)); // opener probe resolves, re-render
+render();
+await new Promise((r) => setTimeout(r, 20));
+if (!/data-open-realm="work"[^>]*>開啟 ↗ <small>Work Chrome/.test(els.view.innerHTML)) fail("work open link not routed to its browser profile");
 
 WD.active = "items";
 render();

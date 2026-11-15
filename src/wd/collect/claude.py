@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -123,8 +124,29 @@ class TranscriptTail:
             st.git_branch = str(d["gitBranch"])
 
 
+def read_account(config_dir: Path) -> dict:
+    """Which Claude account this config dir is logged into (email + org name).
+
+    Claude Code keeps the login in ``<CLAUDE_CONFIG_DIR>/.claude.json``; for the
+    default ``~/.claude`` it lives one level up, in ``~/.claude.json``.
+    """
+    candidates = [config_dir / ".claude.json"]
+    if config_dir.resolve() == (Path.home() / ".claude").resolve():
+        candidates.append(Path.home() / ".claude.json")
+    for p in candidates:
+        try:
+            oa = (json.loads(p.read_text()) or {}).get("oauthAccount") or {}
+        except (OSError, json.JSONDecodeError, AttributeError):
+            continue
+        if oa.get("emailAddress"):
+            return {"email": str(oa["emailAddress"]), "org": str(oa.get("organizationName") or "")}
+    return {}
+
+
 class ClaudeCollector:
     """Keeps per-session transcript tails between polls for one config dir."""
+
+    ACCOUNT_TTL_S = 60
 
     def __init__(self, config_dir: Path, host: str, profile: str, realm: str):
         self.config_dir = config_dir
@@ -132,6 +154,15 @@ class ClaudeCollector:
         self.profile = profile
         self.realm = realm
         self._tails: dict[str, TranscriptTail] = {}
+        self._account: dict = {}
+        self._account_at = 0.0
+
+    def account(self) -> dict:
+        """Cached read of the profile's login (it changes only on /login)."""
+        now = time.time()
+        if now - self._account_at > self.ACCOUNT_TTL_S:
+            self._account, self._account_at = read_account(self.config_dir), now
+        return self._account
 
     def _registry(self) -> list[dict]:
         sdir = self.config_dir / "sessions"
@@ -170,6 +201,7 @@ class ClaudeCollector:
     def collect(self) -> list[SessionSnap]:
         snaps = []
         live_ids = set()
+        acct = self.account()
         for d in self._registry():
             sid = str(d.get("sessionId", ""))
             live_ids.add(sid)
@@ -196,6 +228,8 @@ class ClaudeCollector:
                     away_summary=t.away_summary if t else "",
                     away_summary_at=t.away_summary_at if t else 0,
                     last_prompt=t.last_prompt if t else "",
+                    account=acct.get("email", ""),
+                    account_org=acct.get("org", ""),
                 )
             )
         for sid in list(self._tails):  # forget tails of ended sessions

@@ -1,10 +1,23 @@
 // Sessions view: what needs you first, then every machine's sessions.
-import { WD, esc, ago, ikey } from "../core.js";
+import { WD, esc, ago, ikey, opener } from "../core.js";
 
 const STATUS_LABEL = { waiting: "等你", busy: "執行中", idle: "閒置", gone: "已結束", unknown: "?" };
 const STALE_S = 180; // a source silent this long is probably offline
 
 function base(p) { return (p || "").split("/").filter(Boolean).pop() || p || ""; }
+
+function openLink(s, link) {
+  const target = opener.realms?.[s.realm];
+  const label = target ? `開啟 ↗ <small>${esc(target.label)}</small>` : "開啟 ↗";
+  const title = target ? `在 Chrome「${target.label}」開啟` : (s.account ? `需要以 ${s.account} 登入的瀏覽器` : "");
+  return `<a class="open" href="${esc(link)}" target="_blank" rel="noopener" data-open-realm="${esc(s.realm)}" title="${esc(title)}">${label}</a>`;
+}
+
+function shortAccount(email) {
+  if (!email) return "";
+  const [user, domain = ""] = email.split("@");
+  return `${user}@${domain.split(".")[0]}`;
+}
 
 function card(s, now, itemsById) {
   const stale = s.source_age_s > STALE_S && s.status !== "gone";
@@ -31,7 +44,7 @@ function card(s, now, itemsById) {
     ${items ? `<div class="items">${items}</div>` : ""}
     <footer>
       <span class="meta">${meta}</span>
-      ${link ? `<a class="open" href="${link}" target="_blank" rel="noopener">開啟 ↗</a>` : ""}
+      ${link ? openLink(s, link) : ""}
     </footer>
   </article>`;
 }
@@ -53,7 +66,7 @@ WD.register({
       const silent = srcs.length && srcs.every((s) => s.age_s > STALE_S);
       return `
       <section class="host ${silent ? "silent" : ""}">
-        <h2>${esc(h)} <small>${srcs.map((s) => esc(s.profile)).join(" · ")}${silent ? " · 失聯" : ""}</small></h2>
+        <h2>${esc(h)} <small>${srcs.map((s) => `<span class="chip realm realm-${esc(s.realm)}" title="${esc([s.account, s.account_org].filter(Boolean).join(" · "))}">${esc(s.profile)}${s.account ? ` · ${esc(shortAccount(s.account))}` : ""}</span>`).join(" ")}${silent ? " · 失聯" : ""}</small></h2>
         <div class="grid">${ss.map((s) => card(s, now, itemsById)).join("") || `<p class="empty">沒有其他 session</p>`}</div>
       </section>`;
     };

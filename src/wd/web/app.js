@@ -1,7 +1,7 @@
 // Shell: data sources (this hub + peer hubs), merge, chrome, routing.
 // Each realm's hub is fetched directly by the browser; no hub ever copies
 // another realm's data.
-import { WD, esc, lsSet } from "./core.js";
+import { WD, esc, lsSet, opener, probeOpener, openInProfile } from "./core.js";
 import "./views/sessions.js"; // views register themselves on import
 import "./views/items.js";
 
@@ -76,5 +76,16 @@ export function render() {
   });
 }
 
+// "開啟" links: hand them to the opener (right browser profile) when it serves
+// that realm; otherwise the plain link opens in the current profile.
+document.addEventListener("click", (ev) => {
+  const a = ev.target.closest?.("a[data-open-realm]");
+  if (!a || !opener.realms?.[a.dataset.openRealm]) return;
+  ev.preventDefault();
+  openInProfile(a.dataset.openRealm, a.href).catch(() => window.open(a.href, "_blank", "noopener"));
+});
+
 connect(location.origin);
+probeOpener().then(render);
 setInterval(render, 15000); // keep relative times fresh
+setInterval(() => probeOpener().then(render), 60000);

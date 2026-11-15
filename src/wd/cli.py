@@ -111,6 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--port", type=int)
 
     sub.add_parser("rpc", help="hub side of the ssh transport")
+    sub.add_parser("opener", help="run the browser-profile link opener standalone")
     v = sub.add_parser("view", help="forward every realm's hub to localhost and open the board")
     v.add_argument("--no-open", action="store_true")
     sub.add_parser("config", help="print effective config")
@@ -210,6 +211,10 @@ def dispatch(cfg: cfgmod.Config, args) -> int:
         return 0
     if args.cmd == "status":
         return cmd_status(cfg, args)
+    if args.cmd == "opener":
+        from wd import opener
+
+        return opener.serve(cfg)
     if args.cmd == "view":
         import webbrowser
 

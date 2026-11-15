@@ -19,3 +19,13 @@ view_port = 8740          # `wd view` forwards the hub here
 # tried in order: direct when on the office network, via a jump host otherwise
 hub = ["work-mini", "work-mini-remote"]
 view_port = 8741
+
+# Open each realm's claude.ai links in its own browser profile (the board's
+# "開啟" buttons go through a tiny helper the agent runs on 127.0.0.1:8739).
+# Profile directories: see "Profile Path" at chrome://version in each profile.
+[view.browser_profiles]
+personal = "Default"
+work = "Profile 2"
+
+[view.browser_labels]
+work = "work profile"

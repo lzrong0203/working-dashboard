@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE TABLE IF NOT EXISTS sources (
   host TEXT, profile TEXT, realm TEXT, last_push INTEGER, agent_version TEXT,
+  account TEXT DEFAULT '', account_org TEXT DEFAULT '',
   PRIMARY KEY (host, profile)
 );
 CREATE TABLE IF NOT EXISTS events (
@@ -67,6 +68,10 @@ class Store:
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(SCHEMA)
         cols = {r[1] for r in self.db.execute("PRAGMA table_info(notified)")}
+        scols = {r[1] for r in self.db.execute("PRAGMA table_info(sources)")}
+        for c in ("account", "account_org"):
+            if c not in scols:
+                self.db.execute(f"ALTER TABLE sources ADD COLUMN {c} TEXT DEFAULT ''")
         if "episode" not in cols:  # older schema; markers are disposable
             self.db.execute("DROP TABLE notified")
             self.db.executescript(SCHEMA)
@@ -88,8 +93,10 @@ class Store:
         with self.db:
             cur = self.db.cursor()
             cur.execute(
-                "INSERT INTO sources VALUES (?,?,?,?,?) ON CONFLICT(host,profile) DO UPDATE SET realm=excluded.realm, last_push=excluded.last_push, agent_version=excluded.agent_version",
-                (host, profile, realm, ts, env.get("agent_version", "")),
+                "INSERT INTO sources (host, profile, realm, last_push, agent_version, account, account_org) VALUES (?,?,?,?,?,?,?) "
+                "ON CONFLICT(host,profile) DO UPDATE SET realm=excluded.realm, last_push=excluded.last_push, "
+                "agent_version=excluded.agent_version, account=excluded.account, account_org=excluded.account_org",
+                (host, profile, realm, ts, env.get("agent_version", ""), str(env.get("account") or ""), str(env.get("account_org") or "")),
             )
             existing = {
                 r["key"]: r
