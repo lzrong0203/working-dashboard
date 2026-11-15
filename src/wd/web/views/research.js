@@ -14,9 +14,10 @@ const OUTCOME = {
   pass: ["✓", "通過"], fail: ["✗", "不通過"], inconclusive: ["?", "未定"], void: ["⌀", "作廢"],
   running: ["●", "進行中"], open: ["○", "已登記"], other: ["·", "其他"],
 };
-const MODES = [["map", "總覽"], ["topic", "依主題"], ["time", "時間線"], ["cited", "被引用"]];
+const MODES = [["map", "總覽"], ["topic", "依主題"], ["time", "時間線"], ["cited", "被引用"], ["report", "報告"]];
 const STATE = { supported: "大致成立", refuted: "大致不成立", mixed: "有成有敗", open: "還沒有答案" };
 const KIND = { route: "途徑", question: "問題", cross: "方法" };
+const bare = (title, kind) => (kind === "route" ? String(title).replace(/^(候選)?途徑[:：]\s*/, "") : title);
 
 const cache = new Map(); // `${realm}/${name}` -> {fp, data, loading, error}
 const ui = {
@@ -311,7 +312,7 @@ function lane(g, D) {
   return `
   <div class="lane">
     <button class="lhead" data-group="${esc(g.id)}">
-      <span class="lt">${q.kind ? `<i class="kind k-${esc(q.kind)}">${esc(KIND[q.kind] || q.kind)}</i>` : ""}${esc(g.title)}</span>
+      <span class="lt">${q.kind ? `<i class="kind k-${esc(q.kind)}">${esc(KIND[q.kind] || q.kind)}</i>` : ""}${esc(bare(g.title, q.kind))}</span>
       ${q.state ? `<span class="st s-${esc(q.state)}">${esc(STATE[q.state] || q.state)}</span>` : ""}
       ${q.answer ? `<span class="la">${esc(q.answer)}</span>` : ""}
     </button>
@@ -347,6 +348,43 @@ function overview(d, D) {
     </section>`).join("");
   const loose = D.loose.length ? `<section class="goal"><header><h2>還沒歸類</h2></header><div class="lanes">${axis(D)}${D.loose.map((x) => lane(x, D)).join("")}</div></section>` : "";
   return `<p class="muted legend-o">${Object.entries(OUTCOME).filter(([k]) => k !== "other").map(([k, [i, t]]) => `<span class="ob o-${k}"><i>${i}</i>${t}</span>`).join(" ")}　每個點是一筆登記，橫軸是時間；點一下看那筆，點標題看整條故事線。</p>${blocks}${loose}`;
+}
+
+// A Markdown report built from the same data: goal -> direction -> answer and
+// the evidence behind it, every line traceable to a registration id.
+function reportMd(d, D, label) {
+  const today = new Date().toISOString().slice(0, 10);
+  const cnt = (rs) => ["pass", "fail", "inconclusive", "running", "open", "void"].map((o) => [o, rs.filter((r) => r.outcome === o).length]).filter(([, n]) => n).map(([o, n]) => `${OUTCOME[o][1]} ${n}`).join("、");
+  const line = (r) => `  - ${r.ts.slice(0, 10)} ${r.code ? `**${r.code}** ` : ""}${r.title}（${OUTCOME[r.outcome]?.[1] || r.outcome}，${r.id}）\n    - 為什麼：${r.why_short || r.why || r.hypothesis}\n    - 結果：${r.result_short || [r.verdict, r.result].filter(Boolean).join("：") || "—"}`;
+  const out = [`# ${label}：研究進度`, "", `${today} 產生。共 ${d.records.length} 筆登記（${cnt(d.records)}）。每一句都附登記編號，可回查原始記錄。`, ""];
+  const block = (title, rs, q) => {
+    out.push(`### ${title}`, "");
+    if (q?.answer) out.push(`- **目前答案**（${STATE[q.state] || q.state || "—"}）：${q.answer}`);
+    out.push(`- 登記：${rs.length} 筆（${cnt(rs) || "—"}）`);
+    const recent = rs.slice(-5);
+    if (recent.length) { out.push(`- 最近 ${recent.length} 筆：`); recent.forEach((r) => out.push(line(r))); }
+    out.push("");
+  };
+  if (D.goals.length) {
+    for (const g of D.goals) {
+      out.push(`## ${g.title}`, "");
+      if (g.bar) out.push(`**怎樣算成功**：${g.bar}`, "");
+      if (g.answer) out.push(`**目前**（${STATE[g.state] || g.state || "—"}）：${g.answer}`, "");
+      for (const x of g.qs) block(`${x.q?.kind ? `${KIND[x.q.kind] || x.q.kind}｜` : ""}${bare(x.title, x.q?.kind)}`, x.rs, x.q);
+    }
+    if (D.loose.length) { out.push("## 還沒歸類", ""); for (const x of D.loose) block(x.title, x.rs, x.q); }
+  } else for (const x of D.groups) block(x.title, x.rs, x.q);
+  return out.join("\n");
+}
+
+function reportView(d, D, label) {
+  const md = reportMd(d, D, label);
+  return `
+  <div class="rreport">
+    <p class="muted">依目標與方向整理的進度報告，可以直接貼進週報、Discussion 或簡報備忘稿。AI 整理的「目前答案」請先看過再對外使用。</p>
+    <div class="rrbar"><button type="button" id="rrcopy">複製 Markdown</button><button type="button" id="rrsave">下載 .md</button></div>
+    <pre id="rrmd">${esc(md)}</pre>
+  </div>`;
 }
 
 function timeline(d, D) {
@@ -405,7 +443,7 @@ function render(el, m) {
     return;
   }
   const D = derive(d);
-  const body = ui.mode === "time" ? timeline(d, D) : ui.mode === "cited" ? citedView(d, D) : ui.mode === "map" ? overview(d, D) : topic(d, D);
+  const body = ui.mode === "time" ? timeline(d, D) : ui.mode === "cited" ? citedView(d, D) : ui.mode === "map" ? overview(d, D) : ui.mode === "report" ? reportView(d, D, p.label) : topic(d, D);
   if (paint(el, head + `<div class="research">${body}</div>`)) wire(el, d, D);
 }
 
@@ -461,6 +499,17 @@ function wire(el, d, D) {
     let t;
     q.addEventListener("input", () => { ui.q = q.value; clearTimeout(t); t = setTimeout(rerender, 250); });
   }
+  el.querySelector("#rrcopy")?.addEventListener("click", (ev) => {
+    navigator.clipboard?.writeText(el.querySelector("#rrmd").textContent).then(() => { ev.target.textContent = "已複製"; }, () => { ev.target.textContent = "複製失敗，請手動選取"; });
+  });
+  el.querySelector("#rrsave")?.addEventListener("click", () => {
+    const blob = new Blob([el.querySelector("#rrmd").textContent], { type: "text/markdown;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `research-${new Date().toISOString().slice(0, 10)}.md`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  });
   globalThis.requestAnimationFrame?.(() => markClamped(el));
   setTimeout(() => markClamped(el), 50);
   el.querySelectorAll("button.more").forEach((b) => b.addEventListener("click", async (ev) => {
