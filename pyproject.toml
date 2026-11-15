@@ -1,0 +1,19 @@
+[project]
+name = "working-dashboard"
+version = "0.1.0"
+description = "Track every Claude Code session and the experiments behind them, across machines, without shipping transcripts anywhere."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = ["PyYAML>=6"]
+
+[project.scripts]
+wd = "wd.cli:main"
+workdash = "wd.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wd"]

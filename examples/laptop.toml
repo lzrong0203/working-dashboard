@@ -1,0 +1,19 @@
+# ~/.config/wd/config.toml on a roaming laptop: no hub, just an agent.
+host = "laptop"
+
+[[profiles]]
+label = "personal"
+config_dir = "~/.claude"
+realm = "personal"
+
+[[profiles]]
+label = "work"
+config_dir = "~/.claude-work"
+realm = "work"
+
+[realms.personal]
+hub = ["home-server"]
+
+[realms.work]
+# tried in order: direct when on the office network, via a jump host otherwise
+hub = ["work-mini", "work-mini-remote"]

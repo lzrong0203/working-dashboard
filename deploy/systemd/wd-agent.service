@@ -1,0 +1,18 @@
+# ~/.config/systemd/user/wd-agent.service
+[Unit]
+Description=working-dashboard agent (collects Claude Code sessions, pushes over ssh)
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/wd agent
+Restart=always
+RestartSec=15
+Nice=19
+IOSchedulingClass=idle
+CPUQuota=5%
+MemoryMax=128M
+TasksMax=32
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

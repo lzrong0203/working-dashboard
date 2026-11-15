@@ -1,0 +1,79 @@
+"""The only shape of session data that ever leaves a machine.
+
+Everything a collector learns is funnelled through ``SessionSnap`` and then
+through ``redact()``. Fields not listed here cannot be sent, so adding a new
+field to the wire format is always a deliberate, reviewable change.
+"""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+
+# Status values come straight from Claude Code ("busy" | "idle" | "waiting").
+# "gone" is assigned by the hub when a session disappears from its source.
+STATUSES = ("waiting", "busy", "idle", "gone", "unknown")
+
+TITLE_MAX = 120
+SUMMARY_MAX = 600
+PROMPT_MAX = 240
+
+# Fields dropped when a realm is configured with send = "minimal".
+CONTENT_FIELDS = ("cwd", "git_branch", "ai_title", "away_summary", "last_prompt", "tmux")
+
+
+@dataclass
+class SessionSnap:
+    realm: str
+    host: str
+    profile: str
+    pid: int
+    session_id: str
+    name: str = ""
+    kind: str = "interactive"
+    status: str = "unknown"
+    status_since: int = 0  # epoch ms
+    updated_at: int = 0  # epoch ms
+    started_at: int = 0  # epoch ms
+    version: str = ""
+    cwd: str = ""
+    git_branch: str = ""
+    tmux: str = ""
+    bridge_session_id: str = ""
+    ai_title: str = ""
+    away_summary: str = ""
+    away_summary_at: int = 0  # epoch ms
+    last_prompt: str = ""
+    linked_items: list[str] = field(default_factory=list)
+
+    @property
+    def key(self) -> str:
+        return f"{self.host}/{self.profile}/{self.pid}"
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d["key"] = self.key
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "SessionSnap":
+        names = cls.__dataclass_fields__.keys()
+        return cls(**{k: v for k, v in d.items() if k in names})
+
+
+def _clip(s: str, n: int) -> str:
+    s = " ".join((s or "").split())
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def redact(snap: SessionSnap, send: str = "full") -> SessionSnap:
+    """Apply length limits always, and drop content fields for minimal realms."""
+    snap.ai_title = _clip(snap.ai_title, TITLE_MAX)
+    snap.away_summary = _clip(snap.away_summary, SUMMARY_MAX)
+    snap.last_prompt = _clip(snap.last_prompt, PROMPT_MAX)
+    if snap.status not in STATUSES:
+        snap.status = "unknown"
+    if send == "minimal":
+        for f in CONTENT_FIELDS:
+            setattr(snap, f, "")
+        snap.away_summary_at = 0
+    return snap

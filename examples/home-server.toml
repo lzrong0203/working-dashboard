@@ -1,0 +1,21 @@
+# ~/.config/wd/config.toml on the always-on server that hosts the "personal" hub.
+host = "home-server"
+
+[[profiles]]
+label = "personal"
+config_dir = "~/.claude"
+realm = "personal"
+
+[realms.personal]
+hub = ["local"]
+
+[hub]
+realm = "personal"
+port = 8740
+data_dir = "~/wd-data"            # make this a PRIVATE git repo; cards are committed here
+# URLs as seen from your browser (each forwarded with ssh -L to its own hub)
+peers = ["http://127.0.0.1:8741"]
+
+[hub.notify]
+ntfy_topic = ""                   # long random string; empty disables pushes
+detail = "full"                   # "full" = session name + host, "count" = number only

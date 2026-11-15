@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+dist/
+build/
+*.egg-info/
+
+# Never commit real data or local config. Real config lives in ~/.config/wd,
+# data in ~/.local/share/wd, item cards in a separate private data repo.
+local/
+*.db
+*.db-wal
+*.db-shm
+config.toml
+!examples/*.toml
+.env

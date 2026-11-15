@@ -1,0 +1,29 @@
+# ~/.config/wd/config.toml on the office machine: hosts the "work" hub, and
+# pushes its personal profile to the home server.
+host = "work-mini"
+
+[[profiles]]
+label = "personal"
+config_dir = "~/.claude"
+realm = "personal"
+
+[[profiles]]
+label = "work"
+config_dir = "~/.claude-work"
+realm = "work"
+
+[realms.personal]
+hub = ["home-server"]             # ssh alias from ~/.ssh/config
+
+[realms.work]
+hub = ["local"]
+
+[hub]
+realm = "work"
+port = 8741
+data_dir = "~/wd-data-work"
+peers = ["http://127.0.0.1:8740"]
+
+[hub.notify]
+ntfy_topic = ""
+detail = "count"                  # work pushes say only "N sessions need you"

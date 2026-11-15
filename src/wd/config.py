@@ -1,0 +1,159 @@
+"""Configuration.
+
+Real configuration never lives in the repo. It is read from
+``$WD_CONFIG`` or ``~/.config/wd/config.toml``; data goes to ``$WD_HOME`` or
+``~/.local/share/wd``. See ``examples/`` for annotated templates.
+
+Vocabulary:
+  realm    -- a privacy boundary ("personal", "work"). Each realm has exactly one
+              hub, and a realm's data is only ever stored on its hub.
+  profile  -- one Claude Code config dir on this machine (``~/.claude``,
+              ``~/.claude-work``), mapped to one realm.
+  hub      -- the machine that stores a realm's data and serves its board.
+"""
+
+from __future__ import annotations
+
+import os
+import socket
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
+
+DEFAULT_CONFIG = Path("~/.config/wd/config.toml")
+DEFAULT_HOME = Path("~/.local/share/wd")
+
+
+def expand(p: str | Path) -> Path:
+    return Path(os.path.expandvars(str(p))).expanduser()
+
+
+@dataclass
+class Profile:
+    label: str
+    config_dir: Path
+    realm: str
+
+
+@dataclass
+class Realm:
+    name: str
+    # ssh targets tried in order; the literal "local" means this machine is the hub
+    hub: list[str] = field(default_factory=lambda: ["local"])
+    # command that runs `wd` on the hub (non-interactive ssh often lacks ~/.local/bin)
+    hub_cmd: str = "~/.local/bin/wd"
+    # "full" sends titles/summaries/prompts; "minimal" sends status + timestamps only
+    send: str = "full"
+
+
+@dataclass
+class Notify:
+    ntfy_topic: str = ""
+    ntfy_server: str = "https://ntfy.sh"
+    # "full" = session name + host in the push; "count" = only "N sessions waiting"
+    detail: str = "full"
+
+
+@dataclass
+class Hub:
+    realm: str = ""  # empty: this machine is not a hub
+    port: int = 8740
+    data_dir: Path = field(default_factory=lambda: expand("~/wd-data"))
+    # other realms' hubs, merged by the *browser* (data is never copied hub-to-hub)
+    peers: list[str] = field(default_factory=list)
+    notify: Notify = field(default_factory=Notify)
+    git_autocommit: bool = True
+
+
+@dataclass
+class Config:
+    host: str
+    profiles: list[Profile]
+    realms: dict[str, Realm]
+    hub: Hub
+    home: Path
+    interval_s: float = 10.0
+    heartbeat_s: float = 60.0
+    path: Path | None = None
+
+    def realm(self, name: str) -> Realm:
+        if name not in self.realms:
+            self.realms[name] = Realm(name=name)
+        return self.realms[name]
+
+    def profile_for_config_dir(self, config_dir: str | None) -> Profile | None:
+        target = expand(config_dir or "~/.claude").resolve()
+        for p in self.profiles:
+            if p.config_dir.resolve() == target:
+                return p
+        return None
+
+    def current_realm(self) -> str:
+        """Realm for commands run from a shell or an agent's Bash tool."""
+        if os.environ.get("WD_REALM"):
+            return os.environ["WD_REALM"]
+        p = self.profile_for_config_dir(os.environ.get("CLAUDE_CONFIG_DIR"))
+        if p:
+            return p.realm
+        if self.hub.realm:
+            return self.hub.realm
+        return self.profiles[0].realm if self.profiles else "personal"
+
+
+def _default_profiles() -> list[Profile]:
+    out = []
+    for label, d, realm in (("personal", "~/.claude", "personal"), ("work", "~/.claude-work", "work")):
+        if expand(d).is_dir():
+            out.append(Profile(label, expand(d), realm))
+    return out
+
+
+def load(path: str | Path | None = None) -> Config:
+    path = expand(path or os.environ.get("WD_CONFIG") or DEFAULT_CONFIG)
+    raw: dict = {}
+    if path.exists():
+        with open(path, "rb") as f:
+            raw = tomllib.load(f)
+
+    profiles = [
+        Profile(p["label"], expand(p["config_dir"]), p.get("realm", p["label"]))
+        for p in raw.get("profiles", [])
+    ] or _default_profiles()
+
+    realms = {}
+    for name, r in raw.get("realms", {}).items():
+        hub = r.get("hub", ["local"])
+        realms[name] = Realm(
+            name=name,
+            hub=[hub] if isinstance(hub, str) else list(hub),
+            hub_cmd=r.get("hub_cmd", "~/.local/bin/wd"),
+            send=r.get("send", "full"),
+        )
+    for p in profiles:
+        realms.setdefault(p.realm, Realm(name=p.realm))
+
+    h = raw.get("hub", {})
+    n = h.get("notify", {})
+    hub = Hub(
+        realm=h.get("realm", ""),
+        port=int(h.get("port", 8740)),
+        data_dir=expand(h.get("data_dir", "~/wd-data")),
+        peers=list(h.get("peers", [])),
+        notify=Notify(
+            ntfy_topic=n.get("ntfy_topic", ""),
+            ntfy_server=n.get("ntfy_server", "https://ntfy.sh"),
+            detail=n.get("detail", "full"),
+        ),
+        git_autocommit=bool(h.get("git_autocommit", True)),
+    )
+
+    return Config(
+        host=raw.get("host") or socket.gethostname().split(".")[0],
+        profiles=profiles,
+        realms=realms,
+        hub=hub,
+        home=expand(os.environ.get("WD_HOME") or raw.get("home") or DEFAULT_HOME),
+        interval_s=float(raw.get("interval_s", 10)),
+        heartbeat_s=float(raw.get("heartbeat_s", 60)),
+        path=path if path.exists() else None,
+    )

@@ -1,0 +1,77 @@
+"""The per-machine agent: collect -> redact -> push to each realm's hub.
+
+One process handles every profile on the machine. Each (profile) snapshot is
+pushed only when it changed, plus a heartbeat so the hub can tell "no sessions"
+from "agent is down".
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import sys
+import time
+
+from wd import __version__
+from wd import config as cfgmod
+from wd.collect.claude import ClaudeCollector
+from wd.snapshot import redact
+from wd.transport import HubUnreachable, replay_spool, send
+
+VOLATILE = ("updated_at",)
+
+
+def build_envelopes(cfg: cfgmod.Config, collectors: dict[str, ClaudeCollector]) -> list[dict]:
+    envs = []
+    for p in cfg.profiles:
+        col = collectors.setdefault(p.label, ClaudeCollector(p.config_dir, cfg.host, p.label, p.realm))
+        send_mode = cfg.realm(p.realm).send
+        sessions = [redact(s, send_mode).to_dict() for s in col.collect()]
+        envs.append({
+            "v": 1,
+            "host": cfg.host,
+            "profile": p.label,
+            "realm": p.realm,
+            "agent_version": __version__,
+            "sent_at": int(time.time() * 1000),
+            "sessions": sessions,
+        })
+    return envs
+
+
+def digest(env: dict) -> str:
+    stable = [{k: v for k, v in s.items() if k not in VOLATILE} for s in env["sessions"]]
+    return hashlib.sha1(json.dumps(stable, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def run(cfg: cfgmod.Config, once: bool = False, print_only: bool = False) -> int:
+    collectors: dict[str, ClaudeCollector] = {}
+    last_digest: dict[str, str] = {}
+    last_sent: dict[str, float] = {}
+    while True:
+        for env in build_envelopes(cfg, collectors):
+            if print_only:
+                print(json.dumps(env, ensure_ascii=False, indent=2))
+                continue
+            key = env["profile"]
+            d = digest(env)
+            due = time.time() - last_sent.get(key, 0) >= cfg.heartbeat_s
+            if d == last_digest.get(key) and not due:
+                continue
+            try:
+                res = send(cfg, env["realm"], {"op": "ingest", "envelope": env})
+                if res.get("ok"):
+                    last_digest[key], last_sent[key] = d, time.time()
+                else:
+                    print(f"[wd agent] {key}: hub rejected: {res.get('error')}", file=sys.stderr)
+            except HubUnreachable as e:
+                print(f"[wd agent] {key}: hub unreachable: {e}", file=sys.stderr)
+        if not print_only:
+            for realm in {p.realm for p in cfg.profiles}:
+                try:
+                    replay_spool(cfg, realm)
+                except Exception as e:  # never let the spool kill the agent
+                    print(f"[wd agent] spool {realm}: {e}", file=sys.stderr)
+        if once or print_only:
+            return 0
+        time.sleep(cfg.interval_s)

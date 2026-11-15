@@ -1,0 +1,21 @@
+# ~/.config/systemd/user/wd-hub.service
+# Low priority with hard caps so the hub can never starve other services on a
+# shared server. Requires `loginctl enable-linger $USER` to survive logout.
+[Unit]
+Description=working-dashboard hub (127.0.0.1 only)
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/wd serve
+Restart=on-failure
+RestartSec=10
+Nice=19
+IOSchedulingClass=idle
+CPUQuota=10%
+MemoryMax=256M
+TasksMax=64
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target
