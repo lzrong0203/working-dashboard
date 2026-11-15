@@ -117,7 +117,7 @@ function hostHeader(h, ctx) {
 }
 
 function legend(ctx) {
-  return `<p class="legend" aria-hidden="true">過去 ${ctx.hours} 小時 <i class="sw seg-waiting"></i>${esc(FORMAL.waiting)} <i class="sw seg-busy"></i>${esc(FORMAL.busy)} <i class="sw seg-idle"></i>${esc(FORMAL.idle)}</p>`;
+  return `<p class="legend" aria-hidden="true">過去 ${Number(ctx.hours) || 12} 小時 <i class="sw seg-waiting"></i>${esc(FORMAL.waiting)} <i class="sw seg-busy"></i>${esc(FORMAL.busy)} <i class="sw seg-idle"></i>${esc(FORMAL.idle)}</p>`;
 }
 
 function goneBlock(ctx) {
@@ -168,6 +168,8 @@ function renderFlap(ctx) {
       <td class="fl c-st" title="${esc(FORMAL[s.status] || "")}">${flaps(`${s.key}|s`, word(s.status), 8)}</td>
       <td class="c-go">${openLink(s, "open")}</td>
     </tr>`).join("");
+  const shown = new Set(rows.map((s) => s.key));
+  for (const k of flapWas.keys()) if (!shown.has(k.slice(0, k.lastIndexOf("|")))) flapWas.delete(k);
   const waiting = rows.filter((s) => s.attention.level >= 2);
   return `
     <section class="board">

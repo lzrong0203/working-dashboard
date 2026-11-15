@@ -50,6 +50,8 @@ what every session is doing right now.
 
 ## The board
 
+![The four looks, rendered with synthetic data](docs/lookbook.png)
+
 - **Four looks**, switchable at any time (`#desk`, `#studio`, `#flap`, `#kanban`
   in the URL, or the 風格 menu):
   - **desk**: a calm control panel where how long a session has waited is the

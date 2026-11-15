@@ -6,10 +6,14 @@ click to this helper on the viewing machine, which runs e.g.
 
     open -na "Google Chrome" --args --profile-directory="Profile 2" <url>
 
-Guard rails: binds 127.0.0.1; loopback Host/Origin only; only POST with a
-custom header (so a foreign page can't trigger it without a CORS preflight we
-refuse); only https://claude.ai/ URLs; only realms that are configured. Runs as
-a thread inside ``wd agent`` (or standalone via ``wd opener``).
+Guard rails: binds 127.0.0.1; browser calls only from the board's own origins
+(its view ports), anything without an Origin needs the per-user token in
+``$WD_HOME/opener.token`` (0600); POST with a custom header (so even a trusted
+origin needs a CORS preflight); bounded body; only https://claude.ai/ URLs;
+only configured realms. Another OS account on the same machine can forge an
+Origin header, so this does not defend against other local users -- at worst
+they could open a claude.ai URL in your browser profile. Runs as a thread inside
+``wd agent`` (or standalone via ``wd opener``).
 """
 
 from __future__ import annotations
@@ -25,6 +29,8 @@ from urllib.parse import urlsplit
 from wd import config as cfgmod
 
 ALLOWED_PREFIX = "https://claude.ai/"
+MAX_BODY = 4096
+MAX_URL = 1024
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 
 
@@ -53,8 +59,40 @@ def open_command(view: cfgmod.View, profile_dir: str, url: str) -> list[str]:
     return ["google-chrome", f"--profile-directory={profile_dir}", url]
 
 
+def trusted_origins(cfg: cfgmod.Config) -> set[str]:
+    """Only the board itself may use the opener: the local ports its hubs are
+    viewed on (each realm's view_port, plus this machine's own hub port)."""
+    ports = {r.view_port for r in cfg.realms.values() if r.view_port}
+    if cfg.hub.realm:
+        ports.add(cfg.hub.port)
+    return {f"http://{h}:{p}" for p in ports for h in ("127.0.0.1", "localhost")}
+
+
+def token_path(cfg: cfgmod.Config) -> Path:
+    return cfg.home / "opener.token"
+
+
+def load_token(cfg: cfgmod.Config) -> str:
+    """Per-user secret for non-browser clients (mode 0600, created on first use)."""
+    import os
+    import secrets
+
+    p = token_path(cfg)
+    try:
+        return p.read_text().strip()
+    except FileNotFoundError:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tok = secrets.token_urlsafe(24)
+        fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(tok)
+        return tok
+
+
 def make_handler(cfg: cfgmod.Config):
     view = cfg.view
+    origins = trusted_origins(cfg)
+    token = load_token(cfg)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "wd-opener"
@@ -64,14 +102,20 @@ def make_handler(cfg: cfgmod.Config):
             pass
 
         def _origin_ok(self) -> bool:
+            """Browser calls must come from the board's own origin; calls without
+            an Origin (curl, scripts) must present the per-user token instead."""
+            if _host(self.headers.get("Host", "")) not in LOOPBACK:
+                return False
             origin = self.headers.get("Origin")
-            return _host(self.headers.get("Host", "")) in LOOPBACK and (not origin or _host(origin) in LOOPBACK)
+            if origin:
+                return origin in origins
+            return self.headers.get("X-WD-Token") == token
 
         def _reply(self, code: int, body: dict):
             data = json.dumps(body, ensure_ascii=False).encode()
             self.send_response(code)
             origin = self.headers.get("Origin")
-            if origin and _host(origin) in LOOPBACK:
+            if origin and origin in origins:
                 self.send_header("Access-Control-Allow-Origin", origin)
                 self.send_header("Vary", "Origin")
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -103,12 +147,21 @@ def make_handler(cfg: cfgmod.Config):
                 return self._reply(403, {"ok": False, "error": "forbidden"})
             if urlsplit(self.path).path != "/open":
                 return self._reply(404, {"ok": False})
+            if self.headers.get("Transfer-Encoding"):
+                return self._reply(400, {"ok": False, "error": "chunked bodies not accepted"})
             try:
-                n = min(int(self.headers.get("Content-Length") or 0), 4096)
-                req = json.loads(self.rfile.read(n) or b"{}")
+                n = int(self.headers.get("Content-Length") or "")
+            except ValueError:
+                return self._reply(411, {"ok": False, "error": "Content-Length required"})
+            if not 0 < n <= MAX_BODY:
+                return self._reply(413, {"ok": False, "error": "body too large"})
+            try:
+                req = json.loads(self.rfile.read(n))
                 realm, url = str(req["realm"]), str(req["url"])
-            except (ValueError, KeyError, json.JSONDecodeError):
+            except (ValueError, KeyError, TypeError, json.JSONDecodeError):
                 return self._reply(400, {"ok": False, "error": "bad request"})
+            if len(url) > MAX_URL:
+                return self._reply(400, {"ok": False, "error": "url too long"})
             profile = view.browser_profiles.get(realm)
             if not profile:
                 return self._reply(404, {"ok": False, "error": f"no browser profile for realm {realm!r}"})

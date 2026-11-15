@@ -86,6 +86,15 @@ for (const look of ["desk", "studio", "flap", "kanban"]) {
 }
 setLook("desk");
 
+// many 2-minute intervals must still draw (they used to vanish under the gap)
+{
+  const { strip } = await import(pathToFileURL(path.join(web, "core.js")).href);
+  const changes = [];
+  for (let i = 0; i < 30; i++) changes.push([now - 3600e3 + i * 120e3, i % 2 ? "busy" : "waiting"]);
+  const svg = strip({ history: { since: now - 2 * 3600e3, start: "idle", changes } }, now, 12);
+  if ((svg.match(/<rect/g) || []).length < 30) fail("short strip intervals vanished");
+}
+
 WD.active = "items";
 render();
 await new Promise((r) => setTimeout(r, 20));

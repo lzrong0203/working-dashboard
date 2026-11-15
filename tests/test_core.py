@@ -360,28 +360,40 @@ class OpenerTest(unittest.TestCase):
         with so.socket() as s:
             s.bind(("127.0.0.1", 0))
             port = s.getsockname()[1]
-        f = Path(tempfile.mkdtemp()) / "c.toml"
-        f.write_text(f'[view]\nopener_port = {port}\n[view.browser_profiles]\nwork = "Profile 2"\n')
+        tmp = Path(tempfile.mkdtemp())
+        f = tmp / "c.toml"
+        f.write_text(f'home = "{tmp}"\n[realms.work]\nhub = ["x"]\nview_port = 8741\n'
+                     f'[view]\nopener_port = {port}\n[view.browser_profiles]\nwork = "Profile 2"\n')
         cfg = cfgmod.load(f)
         launched = []
         orig = opener.subprocess.Popen
         opener.subprocess.Popen = lambda cmd, **kw: launched.append(cmd)
         httpd = opener.start(cfg)
+        token = (tmp / "opener.token").read_text().strip()
+        self.assertEqual(oct((tmp / "opener.token").stat().st_mode & 0o777), "0o600")
+        board = {"Origin": "http://127.0.0.1:8741"}
         try:
-            def req(method, path, body=None, headers=None):
+            def req(method, path, body=None, headers=None, raw=None):
                 c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-                c.request(method, path, body=json.dumps(body) if body else None, headers={"Host": f"127.0.0.1:{port}", **(headers or {})})
+                data = raw if raw is not None else (json.dumps(body).encode() if body else None)
+                c.request(method, path, body=data, headers={"Host": f"127.0.0.1:{port}", **(headers or {})})
                 r = c.getresponse()
                 return r.status, json.loads(r.read() or b"{}")
 
-            self.assertEqual(req("GET", "/config")[1]["realms"]["work"]["profile"], "Profile 2")
-            self.assertEqual(req("GET", "/config", headers={"Host": "evil.example"})[0], 403)
+            self.assertEqual(req("GET", "/config", headers=board)[1]["realms"]["work"]["profile"], "Profile 2")
+            self.assertEqual(req("GET", "/config")[0], 403)  # no Origin, no token
+            self.assertEqual(req("GET", "/config", headers={"X-WD-Token": token})[0], 200)
+            self.assertEqual(req("GET", "/config", headers={"Origin": "http://127.0.0.1:5555"})[0], 403)  # other local page
+            self.assertEqual(req("GET", "/config", headers={**board, "Host": "evil.example"})[0], 403)
             ok_body = {"realm": "work", "url": "https://claude.ai/code/session_x"}
-            self.assertEqual(req("POST", "/open", ok_body)[0], 403)  # missing X-WD-Open
-            h = {"X-WD-Open": "1", "Content-Type": "application/json"}
+            h = {**board, "X-WD-Open": "1", "Content-Type": "application/json"}
+            self.assertEqual(req("POST", "/open", ok_body, board)[0], 403)  # missing X-WD-Open
             self.assertEqual(req("POST", "/open", ok_body, {**h, "Origin": "https://evil.example"})[0], 403)
             self.assertEqual(req("POST", "/open", {"realm": "work", "url": "https://evil.example/"}, h)[0], 400)
             self.assertEqual(req("POST", "/open", {"realm": "personal", "url": ok_body["url"]}, h)[0], 404)
+            self.assertEqual(req("POST", "/open", {"realm": "work", "url": "https://claude.ai/" + "a" * 2000}, h)[0], 400)
+            self.assertEqual(req("POST", "/open", None, {**h, "Content-Length": "-1"}, raw=b"x" * 10)[0], 413)
+            self.assertEqual(req("POST", "/open", None, h, raw=b"x" * 5000)[0], 413)
             self.assertEqual(req("POST", "/open", ok_body, h)[0], 200)
             self.assertEqual(len(launched), 1)
             self.assertIn("--profile-directory=Profile 2", launched[0])
@@ -408,6 +420,46 @@ class AccountTest(unittest.TestCase):
         f.write_text(json.dumps({"numStartups": 3}))  # really logged out
         col._account_at = 0
         self.assertEqual(col.account(), {})
+
+
+class HistoryTest2(unittest.TestCase):
+    def _env(self, status, sid="s"):
+        return {"host": "h", "profile": "p", "realm": "personal", "sessions": [
+            SessionSnap(realm="personal", host="h", profile="p", pid=1, session_id=sid, status=status, status_since=1).to_dict()]}
+
+    def test_new_session_on_same_pid_starts_fresh(self):
+        st = Store(Path(tempfile.mkdtemp()) / "t.db")
+        st.ingest(self._env("busy", "old"))
+        st.ingest(self._env("waiting", "old"))
+        st.ingest(self._env("idle", "new"))
+        h = st.state("personal")["sessions"][0]["history"]
+        self.assertEqual((h["start"], h["changes"]), ("idle", []))
+
+    def test_truncation_moves_since(self):
+        from wd.hub import store as storemod
+
+        st = Store(Path(tempfile.mkdtemp()) / "t.db")
+        st.ingest(self._env("busy"))
+        now = storemod.now_ms()
+        with st.db:
+            for i in range(storemod.HISTORY_MAX_CHANGES + 50):
+                st.db.execute("INSERT INTO events VALUES (?,?,?,?,?,?)", (now - 3600_000 + i * 1000, "h/p/1", "s", "", None, "idle" if i % 2 else "waiting"))
+        h = st.state("personal")["sessions"][0]["history"]
+        self.assertEqual(len(h["changes"]), storemod.HISTORY_MAX_CHANGES)
+        self.assertGreater(h["since"], now - 3600_000)  # knowledge starts at the cut, not the window
+
+    def test_retention_keeps_a_baseline(self):
+        from wd.hub import store as storemod
+
+        st = Store(Path(tempfile.mkdtemp()) / "t.db")
+        st.ingest(self._env("idle"))
+        with st.db:
+            st.db.execute("UPDATE events SET ts = ts - ?", (20 * 86400_000,))
+        st.ingest(self._env("idle"))  # pruning runs here
+        self.assertEqual(st.db.execute("SELECT COUNT(*) FROM events").fetchone()[0], 1)
+        h = st.state("personal")["sessions"][0]["history"]
+        self.assertEqual(h["start"], "idle")
+        self.assertLess(h["since"], storemod.now_ms() - 11 * 3600_000)
 
 
 class HistoryTest(unittest.TestCase):

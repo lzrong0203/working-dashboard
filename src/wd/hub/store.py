@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS events (
   ts INTEGER, key TEXT, session_id TEXT, name TEXT, from_status TEXT, to_status TEXT
 );
 CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
+CREATE INDEX IF NOT EXISTS events_session ON events(key, session_id, ts);
 CREATE TABLE IF NOT EXISTS items (
   id TEXT PRIMARY KEY, type TEXT, status TEXT, data TEXT, updated TEXT
 );
@@ -129,7 +130,10 @@ class Store:
                     cur.execute("UPDATE sessions SET status='gone', status_since=?, data=? WHERE key=?", (ts, json.dumps(d, ensure_ascii=False), key))
                     cur.execute(event, (ts, key, old["session_id"], d.get("name", ""), old["status"], "gone"))
             cur.execute("DELETE FROM sessions WHERE status='gone' AND status_since < ?", (ts - GONE_KEEP_S * 1000,))
-            cur.execute("DELETE FROM events WHERE ts < ?", (ts - EVENT_RETENTION_DAYS * 86400_000,))
+            cur.execute(
+                "DELETE FROM events WHERE ts < ? AND rowid NOT IN (SELECT MAX(rowid) FROM events GROUP BY key)",
+                (ts - EVENT_RETENTION_DAYS * 86400_000,),
+            )
             cur.execute("DELETE FROM requests WHERE ts < ?", (ts - REQUEST_RETENTION_DAYS * 86400_000,))
         return {"ok": True, "sessions": len(incoming)}
 
@@ -174,7 +178,6 @@ class Store:
             refs = it.get("sessions")
             for ref in refs if isinstance(refs, list) else []:
                 by_session.setdefault(str(ref).rsplit("/", 1)[-1], []).append(it["id"])
-        histories = self._histories(ts)
         sessions = []
         for r in self.db.execute("SELECT data FROM sessions"):
             s = json.loads(r["data"])
@@ -188,7 +191,7 @@ class Store:
             s["attention"] = {"level": level, "name": LEVEL_NAMES.get(level, str(level)), "reason": reason}
             s["source_age_s"] = age
             s["linked_items"] = by_session.get(s["session_id"], [])
-            s["history"] = histories.get(s["key"], {"since": ts, "start": s["status"], "changes": []})
+            s["history"] = self._history(s, ts)
             sessions.append(s)
         sessions.sort(key=lambda s: (-s["attention"]["level"], s["status"] == "gone", -(s.get("status_since") or 0)))
         recent = [dict(r) for r in self.db.execute("SELECT * FROM events ORDER BY ts DESC LIMIT 200")]
@@ -203,34 +206,34 @@ class Store:
             "history_hours": HISTORY_H,
         }
 
-    def _histories(self, ts: int) -> dict[str, dict]:
-        """Per session key: status at the window start plus every change since.
+    def _history(self, s: dict, ts: int) -> dict:
+        """One session's status at the window start plus every change since.
 
-        ``since`` is when the hub first saw the key if that's inside the window
-        (nothing is known before it), else the window start.
+        Only this session's own events count (pid reuse and /clear start a fresh
+        history). ``since`` marks where knowledge begins; before it the strip is
+        left empty rather than guessed. Indexed: two small queries per session.
         """
         t0 = ts - HISTORY_H * 3600_000
-        start: dict[str, str] = {}
-        for r in self.db.execute("SELECT key, to_status FROM events WHERE ts < ? ORDER BY ts, rowid", (t0,)):
-            start[r[0]] = r[1]  # last one wins (rowid breaks same-ms ties)
-        out: dict[str, dict] = {}
-        for r in self.db.execute("SELECT ts, key, from_status, to_status FROM events WHERE ts >= ? ORDER BY ts, rowid", (t0,)):
-            h = out.get(r["key"])
-            if h is None:
-                known = r["key"] in start
-                h = out[r["key"]] = {
-                    "since": t0 if known else r["ts"],
-                    "start": start[r["key"]] if known else r["to_status"],
-                    "changes": [],
-                }
-                if not known:
-                    continue  # this event *is* the first sighting
-            h["changes"].append([r["ts"], r["to_status"]])
-        for k, st in start.items():
-            out.setdefault(k, {"since": t0, "start": st, "changes": []})
-        for h in out.values():
-            h["changes"] = h["changes"][-HISTORY_MAX_CHANGES:]
-        return out
+        key, sid = s["key"], s["session_id"]
+        prev = self.db.execute(
+            "SELECT to_status FROM events WHERE key=? AND session_id=? AND ts < ? ORDER BY ts DESC, rowid DESC LIMIT 1",
+            (key, sid, t0),
+        ).fetchone()
+        rows = self.db.execute(
+            "SELECT ts, to_status FROM events WHERE key=? AND session_id=? AND ts >= ? ORDER BY ts, rowid",
+            (key, sid, t0),
+        ).fetchall()
+        if prev is not None:
+            since, start, changes = t0, prev[0], [[r[0], r[1]] for r in rows]
+        elif rows:  # first sighting is inside the window
+            since, start, changes = rows[0][0], rows[0][1], [[r[0], r[1]] for r in rows[1:]]
+        else:  # no events at all (e.g. pruned): trust Claude's own status timestamp
+            since = max(t0, min(int(s.get("status_since") or ts), ts))
+            start, changes = s["status"], []
+        if len(changes) > HISTORY_MAX_CHANGES:  # keep the newest; knowledge starts at the cut
+            cut = changes[-HISTORY_MAX_CHANGES - 1]
+            since, start, changes = cut[0], cut[1], changes[-HISTORY_MAX_CHANGES:]
+        return {"since": since, "start": start, "changes": changes}
 
     # -- notification bookkeeping -------------------------------------------
     def notify_candidates(self, sessions: list[dict], threshold: int) -> list[dict]:

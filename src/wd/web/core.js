@@ -76,6 +76,7 @@ const hhmm = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minu
 // surface gap, colour by state (validated palette, see style.css), hover title
 // per segment, and an aria-label with the same facts. Unknown time stays empty.
 export function strip(s, now = Date.now(), hours = 12) {
+  hours = Number(hours) || 12;
   const h = s.history;
   if (!h) return "";
   const t0 = now - hours * 3600e3;
@@ -92,8 +93,10 @@ export function strip(s, now = Date.now(), hours = 12) {
   const marks = segs
     .filter(([, , st]) => st === "waiting" || st === "busy" || st === "idle")
     .map(([a, b, st]) => {
-      const x0 = x(a), w = x(b) - x0 - GAP;
-      if (w < 0.6) return "";
+      // short intervals stay visible: tiny ones drop the gap and get a floor width
+      const x0 = x(a), raw = x(b) - x0;
+      if (raw <= 0) return "";
+      const w = Math.max(raw > GAP * 2 ? raw - GAP : raw, 0.8);
       return `<rect class="seg seg-${st}" x="${x0.toFixed(1)}" y="0" width="${w.toFixed(1)}" height="${H}" rx="2"><title>${esc(FORMAL[st])} ${hhmm(a)}–${hhmm(b)}</title></rect>`;
     }).join("");
   const label = segs.filter(([, , st]) => FORMAL[st]).map(([a, b, st]) => `${FORMAL[st]} ${hhmm(a)}–${hhmm(b)}`).join("，");
