@@ -55,7 +55,28 @@ ln -sf ../../scripts/privacy-check.sh .git/hooks/pre-commit
 Documentation and examples use generic machine names (laptop, home-server,
 work-mini) and invented projects.
 
+## The browser-profile opener
+
+`wd/opener.py` is the only local endpoint that *does* something: it opens a
+link in a browser profile. It has these guards:
+
+- It listens on `127.0.0.1` only, and checks that `Host` and `Origin` are
+  loopback.
+- It accepts only `POST` with a custom header, so a foreign web page can't fire
+  it without a CORS preflight, which it refuses.
+- It opens only `https://claude.ai/` URLs.
+- It opens them only for realms you configured.
+- It launches the browser with an argument list. No shell is involved.
+
+The Claude account email shown on the board is read from each profile's local
+`.claude.json`. Like other content fields, it goes only to that realm's hub and
+is dropped in minimal mode.
+
 ## Third parties
+
+- **Google Fonts**: the board page loads its fonts from Google Fonts. Delete the
+  `<link>` tags in `web/index.html` if you want it fully offline; everything
+  falls back to system fonts.
 
 - **ntfy**: pushes go through the ntfy server you configure. They carry a
   session name and host label (`detail = "full"`) or only a count

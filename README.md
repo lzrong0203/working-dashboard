@@ -48,6 +48,27 @@ what every session is doing right now.
   `supersedes`, `informed_by`. Status and verdict are separate, so "done, but the
   hypothesis was refuted" is expressible.
 
+## The board
+
+- **Four looks**, switchable at any time (`#desk`, `#studio`, `#flap`, `#kanban`
+  in the URL, or the 風格 menu):
+  - **desk**: a calm control panel where how long a session has waited is the
+    headline;
+  - **studio**: a pixel office where each session is a person who types, raises
+    a hand, or naps;
+  - **flap**: an airport departures board;
+  - **kanban**: sticky notes on cork.
+
+  Each look has its own words for the states. A state is never shown by colour
+  alone, and animations stop under `prefers-reduced-motion`.
+- **A 12-hour status strip** per session (waiting / busy / idle), drawn from the
+  hub's event log. The palette is validated for colour-vision deficiency.
+- **Which account?** Each machine's profiles show the Claude login they use.
+- **The right browser profile.** If you keep work and personal claude.ai
+  accounts in separate Chrome profiles, a small helper started by the agent
+  opens each realm's "開啟" links in the profile you configured
+  (`[view.browser_profiles]`).
+
 ## Quick start
 
 Requires [uv](https://docs.astral.sh/uv/) (installs its own Python ≥ 3.11).

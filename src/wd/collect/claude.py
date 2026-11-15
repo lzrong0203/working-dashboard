@@ -124,23 +124,29 @@ class TranscriptTail:
             st.git_branch = str(d["gitBranch"])
 
 
-def read_account(config_dir: Path) -> dict:
+def read_account(config_dir: Path) -> dict | None:
     """Which Claude account this config dir is logged into (email + org name).
 
     Claude Code keeps the login in ``<CLAUDE_CONFIG_DIR>/.claude.json``; for the
-    default ``~/.claude`` it lives one level up, in ``~/.claude.json``.
+    default ``~/.claude`` it lives one level up, in ``~/.claude.json``. Running
+    sessions rewrite that file often, so a read can catch it half-written:
+    returns ``None`` for "couldn't read", ``{}`` for "readable, not logged in".
     """
     candidates = [config_dir / ".claude.json"]
     if config_dir.resolve() == (Path.home() / ".claude").resolve():
         candidates.append(Path.home() / ".claude.json")
+    failed = False
     for p in candidates:
         try:
-            oa = (json.loads(p.read_text()) or {}).get("oauthAccount") or {}
-        except (OSError, json.JSONDecodeError, AttributeError):
+            oa = (json.loads(p.read_text(encoding="utf-8")) or {}).get("oauthAccount") or {}
+        except FileNotFoundError:
             continue
-        if oa.get("emailAddress"):
+        except (OSError, ValueError, AttributeError):  # ValueError covers JSON + Unicode errors
+            failed = True
+            continue
+        if isinstance(oa, dict) and oa.get("emailAddress"):
             return {"email": str(oa["emailAddress"]), "org": str(oa.get("organizationName") or "")}
-    return {}
+    return None if failed else {}
 
 
 class ClaudeCollector:
@@ -158,10 +164,15 @@ class ClaudeCollector:
         self._account_at = 0.0
 
     def account(self) -> dict:
-        """Cached read of the profile's login (it changes only on /login)."""
+        """Cached read of the profile's login (it changes only on /login).
+        A failed read keeps the last good value and retries in a few seconds."""
         now = time.time()
         if now - self._account_at > self.ACCOUNT_TTL_S:
-            self._account, self._account_at = read_account(self.config_dir), now
+            got = read_account(self.config_dir)
+            if got is None:
+                self._account_at = now - self.ACCOUNT_TTL_S + 5
+            else:
+                self._account, self._account_at = got, now
         return self._account
 
     def _registry(self) -> list[dict]:

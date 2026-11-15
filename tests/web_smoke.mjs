@@ -9,17 +9,17 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const web = path.join(here, "..", "src", "wd", "web");
 
 const els = {};
-const el = (id) => (els[id] ??= { id, innerHTML: "", textContent: "", querySelectorAll: () => [] });
-globalThis.document = { getElementById: el, title: "", addEventListener: () => {} };
+const el = (id) => (els[id] ??= { id, innerHTML: "", textContent: "", value: "", options: [], querySelectorAll: () => [] });
+globalThis.document = { getElementById: el, title: "", addEventListener: () => {}, documentElement: { dataset: { look: "desk" } } };
 globalThis.localStorage = { getItem: () => null, setItem: () => {} };
-globalThis.requestAnimationFrame = (fn) => setTimeout(fn, 0);
+globalThis.requestAnimationFrame = () => 0; // like a sleeping display: rAF never fires
 globalThis.location = { origin: "http://127.0.0.1:8740" };
 
 const now = Date.now();
 const sess = (realm, pid, status, level, extra = {}) => ({
   key: `h/${realm}/${pid}`, realm, host: "h", profile: realm, pid, session_id: `s${pid}`, name: `n${pid}`,
   status, status_since: now - 60000, attention: { level, reason: level >= 3 ? "等你 1 分鐘" : "" },
-  source_age_s: 5, linked_items: [], ...extra,
+  source_age_s: 5, linked_items: [], history: { since: now - 3 * 3600e3, start: "busy", changes: [[now - 3600e3, status]] }, ...extra,
 });
 const states = {
   "http://127.0.0.1:8740": {
@@ -53,7 +53,7 @@ globalThis.fetch = async (url) => {
 
 const timeout = setTimeout(() => { console.error("FAIL: module graph did not finish loading (import cycle?)"); process.exit(1); }, 3000);
 const { render } = await import(pathToFileURL(path.join(web, "app.js")).href);
-const { WD } = await import(pathToFileURL(path.join(web, "core.js")).href);
+const { WD, setLook } = await import(pathToFileURL(path.join(web, "core.js")).href);
 clearTimeout(timeout);
 await new Promise((r) => setTimeout(r, 50));
 
@@ -69,6 +69,22 @@ await new Promise((r) => setTimeout(r, 50)); // opener probe resolves, re-render
 render();
 await new Promise((r) => setTimeout(r, 20));
 if (!/data-open-realm="work"[^>]*>開啟 ↗ <small>Work Chrome/.test(els.view.innerHTML)) fail("work open link not routed to its browser profile");
+
+// every look renders the same facts, escaped, with a state word
+for (const look of ["desk", "studio", "flap", "kanban"]) {
+  setLook(look);
+  render();
+  await new Promise((r) => setTimeout(r, 20));
+  const html = els.view.innerHTML;
+  if (html.includes("<b>xss?</b>")) fail(`${look}: ai_title not escaped`);
+  if (!html.includes("n1") && !html.includes(">n<")) fail(`${look}: waiting session missing`);
+  if (!html.includes("n9") && !html.includes(">9<")) fail(`${look}: work session missing`);
+  if (look === "studio" && !html.includes('class="scene"')) fail("studio: no pixel scene");
+  if (look === "flap" && !html.includes("DEPARTURES")) fail("flap: no board");
+  if (look === "kanban" && !html.includes('class="cork"')) fail("kanban: no cork board");
+  if ((look === "desk" || look === "studio") && !html.includes('class="strip"')) fail(`${look}: no status strip`);
+}
+setLook("desk");
 
 WD.active = "items";
 render();

@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 EVENT_RETENTION_DAYS = 14
 REQUEST_RETENTION_DAYS = 30
 GONE_KEEP_S = 6 * 3600  # ended sessions stay visible (greyed) for a while
+HISTORY_H = 12  # status history shipped per session for the timeline strip
+HISTORY_MAX_CHANGES = 300
 
 
 def now_ms() -> int:
@@ -172,6 +174,7 @@ class Store:
             refs = it.get("sessions")
             for ref in refs if isinstance(refs, list) else []:
                 by_session.setdefault(str(ref).rsplit("/", 1)[-1], []).append(it["id"])
+        histories = self._histories(ts)
         sessions = []
         for r in self.db.execute("SELECT data FROM sessions"):
             s = json.loads(r["data"])
@@ -185,6 +188,7 @@ class Store:
             s["attention"] = {"level": level, "name": LEVEL_NAMES.get(level, str(level)), "reason": reason}
             s["source_age_s"] = age
             s["linked_items"] = by_session.get(s["session_id"], [])
+            s["history"] = histories.get(s["key"], {"since": ts, "start": s["status"], "changes": []})
             sessions.append(s)
         sessions.sort(key=lambda s: (-s["attention"]["level"], s["status"] == "gone", -(s.get("status_since") or 0)))
         recent = [dict(r) for r in self.db.execute("SELECT * FROM events ORDER BY ts DESC LIMIT 200")]
@@ -196,7 +200,37 @@ class Store:
             "items": items,
             "item_errors": json.loads(self._meta("items_errors", "[]")),
             "events": recent,
+            "history_hours": HISTORY_H,
         }
+
+    def _histories(self, ts: int) -> dict[str, dict]:
+        """Per session key: status at the window start plus every change since.
+
+        ``since`` is when the hub first saw the key if that's inside the window
+        (nothing is known before it), else the window start.
+        """
+        t0 = ts - HISTORY_H * 3600_000
+        start: dict[str, str] = {}
+        for r in self.db.execute("SELECT key, to_status FROM events WHERE ts < ? ORDER BY ts, rowid", (t0,)):
+            start[r[0]] = r[1]  # last one wins (rowid breaks same-ms ties)
+        out: dict[str, dict] = {}
+        for r in self.db.execute("SELECT ts, key, from_status, to_status FROM events WHERE ts >= ? ORDER BY ts, rowid", (t0,)):
+            h = out.get(r["key"])
+            if h is None:
+                known = r["key"] in start
+                h = out[r["key"]] = {
+                    "since": t0 if known else r["ts"],
+                    "start": start[r["key"]] if known else r["to_status"],
+                    "changes": [],
+                }
+                if not known:
+                    continue  # this event *is* the first sighting
+            h["changes"].append([r["ts"], r["to_status"]])
+        for k, st in start.items():
+            out.setdefault(k, {"since": t0, "start": st, "changes": []})
+        for h in out.values():
+            h["changes"] = h["changes"][-HISTORY_MAX_CHANGES:]
+        return out
 
     # -- notification bookkeeping -------------------------------------------
     def notify_candidates(self, sessions: list[dict], threshold: int) -> list[dict]:

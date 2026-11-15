@@ -1,13 +1,13 @@
 // Shell: data sources (this hub + peer hubs), merge, chrome, routing.
 // Each realm's hub is fetched directly by the browser; no hub ever copies
 // another realm's data.
-import { WD, esc, lsSet, opener, probeOpener, openInProfile } from "./core.js";
+import { WD, LOOKS, esc, lsSet, setLook, word, opener, probeOpener, openInProfile } from "./core.js";
 import "./views/sessions.js"; // views register themselves on import
 import "./views/items.js";
 
 // Merged read model across all reachable hubs.
 export function merged() {
-  const out = { sessions: [], items: [], sources: [], events: [], realms: [], offline: [], itemErrors: [] };
+  const out = { sessions: [], items: [], sources: [], events: [], realms: [], offline: [], itemErrors: [], historyHours: 12 };
   for (const src of WD.sources.values()) {
     if (!src.state) { out.offline.push(src); continue; }
     const st = src.state;
@@ -18,6 +18,7 @@ export function merged() {
     out.sources.push(...(st.sources || []).map((s) => ({ ...s, realm: st.realm })));
     out.events.push(...(st.events || []).map((e) => ({ ...e, realm: st.realm })));
     out.itemErrors.push(...(st.item_errors || []).map((e) => `${st.realm}: ${e}`));
+    if (st.history_hours) out.historyHours = st.history_hours;
   }
   out.sessions.sort((a, b) => b.attention.level - a.attention.level || (a.status === "gone") - (b.status === "gone") || (b.status_since || 0) - (a.status_since || 0));
   return out;
@@ -45,9 +46,16 @@ function renderChrome(m) {
   const by = (st) => m.sessions.filter((s) => s.status === st).length;
   const urgent = m.sessions.filter((s) => s.attention.level >= 3).length;
   document.getElementById("counts").innerHTML = `
-    <span class="count urgent ${urgent ? "on" : ""}">需要你 <b>${urgent}</b></span>
-    <span class="count busy">執行中 <b>${by("busy")}</b></span>
-    <span class="count idle">閒置 <b>${by("idle")}</b></span>`;
+    <span class="count urgent ${urgent ? "on" : ""}"><b>${urgent}</b>需要你</span>
+    <span class="count busy"><b>${by("busy")}</b>${esc(word("busy"))}</span>
+    <span class="count idle"><b>${by("idle")}</b>${esc(word("idle"))}</span>`;
+
+  const sel = document.getElementById("looks");
+  if (sel && !sel.options.length) {
+    sel.innerHTML = LOOKS.map((l) => `<option value="${esc(l.id)}">${esc(l.label)}</option>`).join("");
+    sel.onchange = () => { setLook(sel.value); render(); };
+  }
+  if (sel) sel.value = WD.look;
   document.title = urgent ? `(${urgent}) Working Dashboard` : "Working Dashboard";
 
   const tabs = document.getElementById("tabs");
@@ -63,17 +71,20 @@ function renderChrome(m) {
   document.getElementById("clock").textContent = `更新於 ${new Date().toLocaleTimeString()}`;
 }
 
+// Coalesce bursts of updates into one render. setTimeout, not
+// requestAnimationFrame: rAF never fires without a display link (asleep
+// screens, some headless/embedded browsers) and the board would stay blank.
 let pending = false;
 export function render() {
   if (pending) return;
   pending = true;
-  requestAnimationFrame(() => {
+  setTimeout(() => {
     pending = false;
     const m = merged();
     renderChrome(m);
     const view = WD.views.find((v) => v.id === WD.active) || WD.views[0];
     if (view) view.render(document.getElementById("view"), m);
-  });
+  }, 16);
 }
 
 // "開啟" links: hand them to the opener (right browser profile) when it serves

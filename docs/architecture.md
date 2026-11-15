@@ -99,6 +99,24 @@ never produce merge conflicts.
   `deploy/systemd/wd-hub.service` (`Nice=19`, `CPUQuota`, `MemoryMax`,
   `IOSchedulingClass=idle`).
 
+## Front end
+
+- **Views and looks are separate.**
+  - A *view* is a tab (Sessions, 實驗與工作).
+  - A *look* is a visual world applied to the whole page: desk, studio, flap or
+    kanban, set by `<html data-look>` before first paint.
+  - Every look redefines all colour tokens and commits to a single colour
+    scheme.
+  - The data and the markup contract don't change between looks.
+- **Loading.** `web/core.js` holds the shared state and imports nothing; views
+  import it, and never `app.js`. `tests/web_smoke.mjs` loads the real modules
+  under a DOM stub and renders every look.
+- **Rendering.** Renders are coalesced with `setTimeout`, not
+  `requestAnimationFrame`, which never fires without a display link.
+- **Status strip.** The hub ships each session's last 12 h of transitions
+  (`history`). The strip draws segments with a 2 px surface gap, gives each
+  segment a hover title, and carries an `aria-label` with the same facts.
+
 ## Robustness
 
 - **Card writes are serialised.** Every item operation runs under an exclusive

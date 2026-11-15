@@ -389,3 +389,40 @@ class OpenerTest(unittest.TestCase):
         finally:
             httpd.shutdown()
             opener.subprocess.Popen = orig
+
+
+class AccountTest(unittest.TestCase):
+    def test_half_written_file_keeps_last_good_account(self):
+        from wd.collect.claude import ClaudeCollector, read_account
+
+        d = Path(tempfile.mkdtemp()) / "cfg"
+        d.mkdir()
+        f = d / ".claude.json"
+        f.write_text(json.dumps({"oauthAccount": {"emailAddress": "a@example.com", "organizationName": "Org"}}))
+        col = ClaudeCollector(d, "h", "p", "personal")
+        self.assertEqual(col.account()["email"], "a@example.com")
+        f.write_text('{"oauthAccount": {"emailAdd')  # caught mid-write
+        self.assertIsNone(read_account(d))
+        col._account_at = 0  # force a re-read
+        self.assertEqual(col.account()["email"], "a@example.com")
+        f.write_text(json.dumps({"numStartups": 3}))  # really logged out
+        col._account_at = 0
+        self.assertEqual(col.account(), {})
+
+
+class HistoryTest(unittest.TestCase):
+    def test_history_window(self):
+        st = Store(Path(tempfile.mkdtemp()) / "t.db")
+        env = lambda status: {"host": "h", "profile": "p", "realm": "personal", "sessions": [
+            SessionSnap(realm="personal", host="h", profile="p", pid=1, session_id="s", status=status).to_dict()]}
+        st.ingest(env("busy"))
+        st.ingest(env("waiting"))
+        st.ingest(env("idle"))
+        h = st.state("personal")["sessions"][0]["history"]
+        self.assertEqual(h["start"], "busy")
+        self.assertEqual([c[1] for c in h["changes"]], ["waiting", "idle"])
+        # an event older than the window becomes the start status
+        with st.db:
+            st.db.execute("UPDATE events SET ts = ts - ?", (13 * 3600_000,))
+        h = st.state("personal")["sessions"][0]["history"]
+        self.assertEqual((h["start"], h["changes"]), ("idle", []))
