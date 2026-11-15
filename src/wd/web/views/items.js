@@ -49,7 +49,9 @@ function ordered(rows) {
 
 WD.register({
   id: "items",
-  label: "實驗與工作",
+  label: "實驗卡",
+  // cards Claude writes with `wd exp` / the experiment-log skill; hidden until there are any
+  visible: (m) => m.items.length > 0 || m.itemErrors.length > 0,
   render(el, m) {
     const byKey = new Map(m.items.map((it) => [ikey(it.realm, it.id), it]));
     const exps = m.items.filter(isExp);

@@ -182,6 +182,20 @@ def make_handler(board: Board):
                 if not proj:
                     self.send_error(404, "no such research source")
                     return
+                rid = (parse_qs(urlsplit(self.path).query).get("id") or [""])[0]
+                if rid:
+                    rec = proj.record(rid)
+                    if not rec:
+                        self.send_error(404, "no such record")
+                        return
+                    body = json.dumps(rec, ensure_ascii=False).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Cache-Control", "no-cache")
+                    self._cors()
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 d = proj.data()
                 etag = f'"{d["fp"]}"'
                 if self.headers.get("If-None-Match") == etag:

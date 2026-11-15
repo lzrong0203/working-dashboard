@@ -288,6 +288,32 @@ class ResearchProject:
             "errors": errors[:50],
         }
 
+    def record(self, rid: str) -> dict | None:
+        """One record with long text fields unclipped (for the 更多 button)."""
+        if not RID.fullmatch(rid or "") and not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", rid or ""):
+            return None
+        for p in self._files():
+            if p.stem != rid and rid not in p.name:
+                continue
+            try:
+                if p.stat().st_size > MAX_FILE:
+                    return None
+                d = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                return None
+            if not isinstance(d, dict) or str(_get(d, self.src.field_names("id")) or "") != rid:
+                continue
+            g = lambda k: _get(d, self.src.field_names(k))  # noqa: E731
+            res = g("result")
+            if isinstance(res, dict):
+                detail = res.get("cv") if isinstance(res.get("cv"), str) else {k: res[k] for k in ("val", "test") if k in res}
+                result = _flat(detail, 20000)
+            else:
+                result = _flat(res, 20000)
+            return {"id": rid, "why": _flat(g("why"), 20000), "hypothesis": _flat(g("hypothesis"), 20000),
+                    "lose": _flat(g("lose"), 20000), "expected": _flat(g("expected"), 20000), "result": result}
+        return None
+
     def summary(self) -> dict:
         d = self.data()
         return {"name": d["name"], "label": d["label"], "fp": d["fp"], "count": len(d["records"]),
