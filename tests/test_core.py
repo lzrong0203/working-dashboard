@@ -478,3 +478,24 @@ class HistoryTest(unittest.TestCase):
             st.db.execute("UPDATE events SET ts = ts - ?", (13 * 3600_000,))
         h = st.state("personal")["sessions"][0]["history"]
         self.assertEqual((h["start"], h["changes"]), ("idle", []))
+
+
+class AttentionTest(unittest.TestCase):
+    def lvl(self, status, mins, age=5.0, started_ago_min=600):
+        from wd.attention import attention
+        now = 10_000_000_000
+        s = {"status": status, "status_since": now - mins * 60_000, "started_at": now - started_ago_min * 60_000}
+        return attention(s, now, age)[0]
+
+    def test_policy(self):
+        from wd.attention import FYI, OK, SOON, URGENT
+        self.assertEqual(self.lvl("waiting", 0), SOON)  # grace: top of board, no push
+        self.assertEqual(self.lvl("waiting", 5), URGENT)
+        self.assertEqual(self.lvl("waiting", 30, age=600), SOON)  # silent machine never pushes
+        self.assertEqual(self.lvl("idle", 3), SOON)  # fresh result
+        self.assertEqual(self.lvl("idle", 3, started_ago_min=3), OK)  # just opened, nothing ran
+        self.assertEqual(self.lvl("idle", 120), FYI)
+        self.assertEqual(self.lvl("idle", 60 * 24), OK)  # parked
+        self.assertEqual(self.lvl("busy", 30), OK)
+        self.assertEqual(self.lvl("busy", 60 * 4), FYI)
+        self.assertEqual(self.lvl("gone", 1), OK)
