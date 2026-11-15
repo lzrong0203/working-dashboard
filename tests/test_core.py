@@ -589,3 +589,36 @@ class ResearchTest(unittest.TestCase):
             self.assertEqual(data["questions"][0]["id"], "q1")
             self.assertEqual([e["type"] for e in data["edges"]], ["uses"])  # unknown target dropped
             self.assertEqual({r["id"]: r.get("why_short") for r in data["records"]}[a["id"]], "first try")
+
+    def test_propose_validates_links(self):
+        from wd.research import ResearchSource
+        from wd.research_propose import propose
+        with tempfile.TemporaryDirectory() as d:
+            reg = Path(d) / "registry"
+            reg.mkdir()
+            a = {"id": "REG-20260101-aaaa", "ts": "2026-01-01", "title": "FOO-1：baseline", "status": "fail"}
+            b = {"id": "REG-20260102-bbbb", "ts": "2026-01-02", "title": "FOO-1b：fix", "status": "pass",
+                 "why": "FOO-1 的取樣問題要修掉"}
+            for r in (a, b):
+                (reg / f"{r['id']}.json").write_text(json.dumps(r, ensure_ascii=False))
+            fake = Path(d) / "fake-claude"
+            q = {"questions": [{"id": "q-sampling", "title": "取樣夠嗎？", "answer": "修完就夠", "state": "supported",
+                                "members": [a["id"], b["id"]]}]}
+            rr = {"records": [{"id": b["id"], "question": "q-sampling", "why": "修 FOO-1", "result": "過了", "edges": [
+                {"to": "FOO-1", "type": "because", "quote": "FOO-1 的取樣問題要修掉"},      # code -> id, quote ok
+                {"to": a["id"], "type": "uses", "quote": "made-up sentence not in record"},   # dropped
+            ]}, {"id": a["id"], "question": "q-sampling", "why": "起點", "result": "沒過",
+                 "edges": [{"to": b["id"], "type": "follows", "quote": "FOO-1b"}]}]}            # points forward: dropped
+            fake.write_text("#!/bin/sh\nif grep -q '研究問題：' ; then echo '%s'; else echo '%s'; fi\n" % (
+                json.dumps({"structured_output": rr}, ensure_ascii=False), json.dumps({"structured_output": q}, ensure_ascii=False)))
+            fake.chmod(0o755)
+            old = os.environ.get("WD_CLAUDE")
+            os.environ["WD_CLAUDE"] = str(fake)
+            try:
+                path = propose(ResearchSource("demo", reg), Path(d) / "data", Path(d), log=lambda *a: None)
+            finally:
+                os.environ.pop("WD_CLAUDE") if old is None else os.environ.__setitem__("WD_CLAUDE", old)
+            ov = json.loads(path.read_text())
+            self.assertEqual([x["id"] for x in ov["questions"]], ["q-sampling"])
+            self.assertEqual(ov["records"][b["id"]]["why"], "修 FOO-1")
+            self.assertEqual([(e["from"], e["to"], e["type"]) for e in ov["edges"]], [(b["id"], a["id"], "because")])
