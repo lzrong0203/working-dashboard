@@ -1,6 +1,11 @@
 # ~/.config/systemd/user/wd-hub.service
-# Low priority with hard caps so the hub can never starve other services on a
-# shared server. Requires `loginctl enable-linger $USER` to survive logout.
+# The hub must never compete with other services on a shared server.
+#  * CPUSchedulingPolicy=idle: SCHED_IDLE, runs only on otherwise-idle CPU time.
+#    A per-process attribute, so it works even where cgroups aren't delegated
+#    to user services (e.g. cgroup v1/hybrid hosts, where CPUQuota/MemoryMax
+#    below are silently ignored).
+#  * LimitAS: hard address-space cap enforced by the kernel via rlimit.
+# Run `loginctl enable-linger $USER` once so it survives logout and reboots.
 [Unit]
 Description=working-dashboard hub (127.0.0.1 only)
 After=network-online.target
@@ -9,11 +14,13 @@ After=network-online.target
 ExecStart=%h/.local/bin/wd serve
 Restart=on-failure
 RestartSec=10
+CPUSchedulingPolicy=idle
 Nice=19
 IOSchedulingClass=idle
+LimitAS=2G
+LimitNPROC=256
 CPUQuota=10%
 MemoryMax=256M
-TasksMax=64
 NoNewPrivileges=yes
 PrivateTmp=yes
 

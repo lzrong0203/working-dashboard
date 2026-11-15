@@ -14,7 +14,16 @@ import uuid
 
 from wd import config as cfgmod
 
-SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8"]
+SSH_OPTS = [
+    "-o", "BatchMode=yes",
+    "-o", "ConnectTimeout=8",
+    # our own multiplexed connection: cheap repeated pushes, and it never
+    # interferes with (or inherits port forwards from) the user's own masters
+    "-o", "ControlMaster=auto",
+    "-o", "ControlPath=~/.ssh/wd-%C",
+    "-o", "ControlPersist=10m",
+    "-o", "ClearAllForwardings=yes",
+]
 
 
 class HubUnreachable(RuntimeError):
