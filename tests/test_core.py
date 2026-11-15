@@ -623,7 +623,7 @@ class ResearchTest(unittest.TestCase):
                                  {"statement": "誤差是 7 倍", "basis": "沒根據", "so_what": "", "change_if": "",
                                   "cites": [{"id": a["id"], "role": "supports", "quote": "完全沒有這句"}]}]}]},
                 "會議報告": {"title": "進度", "one_page": {"goal": "g", "success": "s", "answer": "a", "why_hard": "w",
-                                                       "numbers": [{"text": "誤差降到 1.5 倍", "cites": [b["id"]]}]},
+                                                       "numbers": [{"text": "誤差降到 1.5 倍", "findings": ["f-sampling-1"]}]},
                            "learned": [{"headline": "修正取樣有效", "basis": "公開實測", "so_what": "可用", "findings": ["f-sampling-1"]},
                                        {"headline": "沒出處的話", "basis": "", "so_what": "", "findings": []}],
                            "routes": [{"question": "q-sampling", "plain": "取樣", "status": "可用", "stuck": "無"}],
@@ -654,6 +654,8 @@ class ResearchTest(unittest.TestCase):
             self.assertEqual(rep["learned"][0]["cites"], [b["id"]])
             self.assertIn("沒有對應的結論，不應放進報告", rep["learned"][1]["warnings"])
             self.assertEqual(rep["status"], "draft")
+            self.assertEqual(rep["one_page"]["numbers"][0]["cites"], [b["id"]])  # sources come from the finding
+            self.assertEqual(rep["one_page"]["numbers"][0]["warnings"], [])
 
 class ReviewFixesTest(unittest.TestCase):
     def test_research_guards(self):

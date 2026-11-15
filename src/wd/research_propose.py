@@ -93,7 +93,9 @@ M_SCHEMA = {"type": "object", "properties": {
     "title": {"type": "string"},
     "one_page": {"type": "object", "properties": {
         "goal": {"type": "string"}, "success": {"type": "string"}, "answer": {"type": "string"}, "why_hard": {"type": "string"},
-        "numbers": {"type": "array", "items": S_CITED}}, "required": ["goal", "success", "answer", "why_hard", "numbers"]},
+        "numbers": {"type": "array", "items": {"type": "object", "properties": {
+            "text": {"type": "string"}, "findings": {"type": "array", "items": {"type": "string"}}}, "required": ["text", "findings"]}}},
+        "required": ["goal", "success", "answer", "why_hard", "numbers"]},
     "learned": {"type": "array", "items": {"type": "object", "properties": {
         "headline": {"type": "string"}, "basis": {"type": "string"}, "so_what": {"type": "string"},
         "findings": {"type": "array", "items": {"type": "string"}}}, "required": ["headline", "basis", "so_what", "findings"]}},
@@ -165,6 +167,8 @@ M_PROMPT = """請把下面的研究整理寫成一份 10–15 分鐘的會議報
 - 只能使用下面「結論清單」裡的內容；learned 與 unknowns 一定要列出所根據的結論 id（findings 欄位），不得新增沒有出處的說法。
 - 把握程度不要自己寫，報告產生器會依結論 id 自動帶出。
 - learned 選 3–5 條「會改變下一步、或打開或關掉一條路線」的；routes 列主命題的各條途徑；unknowns 最多 3 條可能翻盤的；decisions 只列真的需要決定的；next_weeks 最多 5 項，各寫做完會知道什麼。
+- 要能在會議上講：one_page 的 goal 60 字內、success 80 字內、answer 80 字內、why_hard 80 字內；numbers 正好 3 個，每個一句、列出根據的結論 id；
+  learned 的 headline 一句結論（30 字內）、basis 100 字內、so_what 80 字內；unknowns 的 item 40 字內、change_if 80 字內；decisions 每欄 60 字內；next_weeks 每項 50 字內。
 {rules}
 目標與途徑：
 {goals}
@@ -292,7 +296,7 @@ def checks(text: str, cites: list[dict], recs: dict, raw_text: dict, forbidden: 
     srcs = [raw_text.get(c["id"], "") for c in cites]
     miss = numbers_ok(text, srcs)
     if miss:
-        warn.append(f"數字 {', '.join(miss)} 在出處裡找不到")
+        warn.append(f"數字 {', '.join(miss)} 不在出處原文裡（若是推算值請核對）")
     for w in forbidden:
         if w and w in text:
             warn.append(f"用了不宣稱的詞「{w}」")
@@ -544,9 +548,14 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
                       "decisions": [], "next_weeks": [], "glossary": []}
             op = md.get("one_page") or {}
             report["one_page"] = {k: _flat(op.get(k), 300) for k in ("goal", "success", "answer", "why_hard")}
-            report["one_page"]["numbers"] = [{"text": _flat(x.get("text"), 160), "cites": [c for c in x.get("cites", []) if c in recs][:4],
-                                              "warnings": numbers_ok(x.get("text"), [raw_text.get(c, "") for c in x.get("cites", [])])}
-                                             for x in op.get("numbers", []) if isinstance(x, dict)][:3]
+            nums = []
+            for x in op.get("numbers", []) if isinstance(op.get("numbers"), list) else []:
+                if not isinstance(x, dict):
+                    continue
+                fids, cites, conf = from_findings(x.get("findings", []))
+                nums.append({"text": _flat(x.get("text"), 160), "cites": cites[:6], "confidence": conf,
+                             "warnings": numbers_ok(x.get("text"), [raw_text.get(c, "") for c in cites]) + ([] if fids else ["沒有對應的結論"])})
+            report["one_page"]["numbers"] = nums[:3]
             for x in md.get("learned", [])[:5]:
                 fids, cites, conf = from_findings(x.get("findings", []))
                 text = f"{x.get('headline', '')} {x.get('basis', '')}"
