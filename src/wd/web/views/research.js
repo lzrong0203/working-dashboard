@@ -160,6 +160,109 @@ function counts(rs) {
   return ["pass", "fail", "inconclusive", "void", "running", "open"].filter((o) => c[o]).map((o) => `<span class="cnt o-${o}">${OUTCOME[o][1]} <b>${c[o]}</b></span>`).join("");
 }
 
+// ---- one direction, all its evidence together ---------------------------------
+// The records use different metrics, so nothing is averaged. Three views that
+// synthesis-without-meta-analysis uses instead: a harvest plot (direction and
+// strength of every record, numeric or not), a forest of margins (how far each
+// result landed from its own threshold, in % of that threshold, with its own
+// noise band), and the lineage inside the direction.
+const STRONG_TYPES = new Set(["follows", "because", "readjudicates", "supersedes", "corrects"]);
+const METHODISH = /adjudication|rule|calibration|validation|free_check|benchmark|tool/;
+function margin(g) {
+  if (!g || !g.th) return null;
+  const sign = g.dir === "down" ? -1 : 1;
+  return { m: (sign * (g.val - g.th)) / Math.abs(g.th), band: g.noise != null ? g.noise / Math.abs(g.th) : null };
+}
+function strength(r) {
+  const mg = margin(r.gauge);
+  if (!mg) return r.gauge ? 2 : 1;
+  const beyond = mg.band != null ? Math.abs(mg.m) > mg.band : Math.abs(mg.m) > 0.1;
+  return beyond ? 3 : 2;
+}
+function harvest(rs) {
+  const cols = [["pass", "通過", "支持假設"], ["inconclusive", "判不出", "雜訊內或未定"], ["fail", "不通過", "不支持"]];
+  const colOf = (r) => (r.outcome === "pass" ? "pass" : r.outcome === "fail" ? "fail" : r.outcome === "inconclusive" || r.outcome === "other" ? "inconclusive" : "");
+  const rest = rs.filter((r) => !colOf(r));
+  const bar = (r) => `<button class="hb o-${esc(r.outcome)}${METHODISH.test(r.kind) ? " k-method" : ""}" style="--h:${strength(r)}" data-rid="${esc(r.id)}" title="${esc(`${day(r.ts)} ${r.code || ""}：${r.title}${r.verdict ? `｜${r.verdict}` : ""}`)}"></button>`;
+  return `
+  <figure class="syn harvest">
+    <figcaption><b>證據收成圖</b><span>每根柱子一筆登記，依時間由左到右；越高代表結果越明確（超出雜訊或門檻 10% 以上）。斜線是方法檢查或重新裁定。</span></figcaption>
+    <div class="hcols">${cols.map(([k, t, sub]) => {
+      const xs = rs.filter((r) => colOf(r) === k);
+      return `<div class="hcol"><div class="hbars">${xs.map(bar).join("")}</div><p><b>${t}</b> ${xs.length}<span>${sub}</span></p></div>`;
+    }).join("")}</div>
+    ${rest.length ? `<p class="hrest">另有 ${rest.map((r) => `<button class="rlink" data-rid="${esc(r.id)}">${badge(r.outcome)} ${esc(r.code || r.id.slice(-4))}</button>`).join(" ")}</p>` : ""}
+  </figure>`;
+}
+const pct = (a) => (a >= 10 ? `${Math.round(a)}×` : `${Math.round(a * 100)}%`);
+function forest(rs) {
+  const rows = rs.map((r) => ({ r, mg: margin(r.gauge) })).filter((x) => x.mg);
+  const skipped = rs.filter((r) => r.gauge && !margin(r.gauge)).length;
+  if (!rows.length) return "";
+  // symmetric log scale: margins run from a few % to thousands of % of the
+  // threshold, and both ends matter (a near miss vs a landslide)
+  const T = (m) => Math.sign(m) * Math.log10(1 + Math.abs(m) / 0.1);
+  const LIM = T(10), W = 300, H = 18, x = (v) => ((Math.max(-LIM, Math.min(LIM, T(v))) + LIM) / (2 * LIM)) * W;
+  const ticks = [-10, -1, -0.1, 0, 0.1, 1, 10];
+  const row = ({ r, mg }) => {
+    const out = Math.abs(mg.m) > 10;
+    return `<div class="frow">
+      <button class="flabel" data-rid="${esc(r.id)}" title="${esc(r.title)}"><time>${esc(day(r.ts))}</time> ${esc(r.code || r.id.slice(-4))}</button>
+      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
+        ${ticks.map((t) => `<line class="${t === 0 ? "zero" : "grid"}" x1="${x(t)}" y1="0" x2="${x(t)}" y2="${H}"/>`).join("")}
+        ${mg.band != null ? `<rect class="band" x="${x(-mg.band)}" y="4" width="${Math.max(1, x(mg.band) - x(-mg.band))}" height="${H - 8}"/>` : ""}
+        <rect class="mk o-${esc(r.outcome)}${r.outcome === "fail" ? " dia" : ""}" x="${x(mg.m) - 4}" y="${H / 2 - 4}" width="8" height="8" rx="${r.outcome === "fail" ? 0 : 4}"${r.outcome === "fail" ? ` transform="rotate(45 ${x(mg.m)} ${H / 2})"` : ""}/>
+        ${out ? `<text x="${mg.m > 0 ? W - 2 : 2}" y="${H / 2 + 3}" text-anchor="${mg.m > 0 ? "end" : "start"}" class="clip">${mg.m > 0 ? "»" : "«"}</text>` : ""}
+      </svg>
+      <span class="fval">${(mg.m >= 0 ? "+" : "−") + pct(Math.abs(mg.m))}</span>
+    </div>`;
+  };
+  return `
+  <figure class="syn forest">
+    <figcaption><b>離門檻多遠</b><span>每列一筆有數字門檻的登記：0 是門檻，右邊是往「通過」的方向，單位是門檻的百分比，刻度是對數（10%、100%、1000%），超過 10 倍畫在邊上。灰帶是那筆自己的雜訊地板，落在灰帶裡等於判不出來。${skipped ? ` ${skipped} 筆門檻為 0，無法換算，沒有列入。` : ""}</span></figcaption>
+    <div class="faxis"><span></span><div>${ticks.map((t) => `<i style="left:${(x(t) / W) * 100}%">${t === 0 ? "0" : (t > 0 ? "+" : "−") + Math.abs(t) * 100 + "%"}</i>`).join("")}</div><span></span></div>
+    ${rows.map(row).join("")}
+  </figure>`;
+}
+function lineage(rs, D) {
+  const ids = new Set(rs.map((r) => r.id));
+  const edges = [];
+  for (const r of rs) for (const e of D.out.get(r.id) || []) if (STRONG_TYPES.has(e.type) && ids.has(e.to)) edges.push(e);
+  if (!edges.length) return "";
+  const inGraph = new Set(edges.flatMap((e) => [e.from, e.to]));
+  const nodes = rs.filter((r) => inGraph.has(r.id)); // already in time order
+  const parents = new Map();
+  for (const e of edges) { if (!parents.has(e.from)) parents.set(e.from, []); parents.get(e.from).push(e.to); }
+  const lane = new Map(), laneEnd = [];
+  nodes.forEach((n, i) => {
+    const p = (parents.get(n.id) || []).find((pid) => lane.has(pid) && laneEnd[lane.get(pid)] === pid);
+    let l = p != null ? lane.get(p) : laneEnd.findIndex((end) => end == null);
+    if (l < 0) l = laneEnd.length;
+    lane.set(n.id, l); laneEnd[l] = n.id;
+    n._i = i;
+  });
+  const DX = 66, DY = 34, PAD = 18;
+  const pos = (id) => { const n = nodes.find((x) => x.id === id); return [PAD + n._i * DX, PAD + lane.get(id) * DY]; };
+  const W = PAD * 2 + (nodes.length - 1) * DX, H = PAD * 2 + Math.max(0, ...lane.values()) * DY + 14;
+  const paths = edges.map((e) => {
+    const [x1, y1] = pos(e.to), [x2, y2] = pos(e.from), mx = (x1 + x2) / 2;
+    return `<path class="le t-${esc(e.type)}${e.by === "ai" ? " ai" : ""}" d="M${x1} ${y1} C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}"><title>${esc(`${OUT[e.type] || e.type}${e.quote ? `：「${e.quote}」` : ""}`)}</title></path>`;
+  }).join("");
+  const dotsSvg = nodes.map((n) => {
+    const [cx, cy] = pos(n.id);
+    return `<g class="ln-node" data-rid="${esc(n.id)}"><circle class="o-${esc(n.outcome)}" cx="${cx}" cy="${cy}" r="6"><title>${esc(`${day(n.ts)} ${n.code || ""}：${n.title}`)}</title></circle><text x="${cx}" y="${cy + 17}" text-anchor="middle">${esc((n.code || n.id.slice(-4)).slice(0, 10))}</text></g>`;
+  }).join("");
+  return `
+  <figure class="syn lineage">
+    <figcaption><b>這個方向怎麼走過來</b><span>左舊右新；線是「承接、因為、重新裁定、取代、更正」，虛線是 AI 從內文找到、附原文的關係（滑過去看引句）。只畫有關係的 ${nodes.length} 筆。</span></figcaption>
+    <div class="lscroll"><svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${paths}${dotsSvg}</svg></div>
+  </figure>`;
+}
+function synthesis(rs, D) {
+  if (rs.length < 2) return "";
+  return `<div class="synthesis">${harvest(rs)}${forest(rs)}${lineage(rs, D)}</div>`;
+}
+
 function topic(d, D) {
   if (!D.groups.some((g) => g.id === ui.group)) ui.group = D.groups[0]?.id ?? "";
   const g = D.groups.find((x) => x.id === ui.group) || D.groups[0];
@@ -182,6 +285,7 @@ function topic(d, D) {
         ${q?.answer ? `<p class="answer"><b>目前答案</b>${esc(q.answer)}${q.state ? ` <span class="chip">${esc(q.state)}</span>` : ""}</p>` : ""}
         <p class="rcounts">${counts(g?.rs || [])}</p>
       </header>
+      ${synthesis(g?.rs || [], D)}
       <div class="timeline">${(g?.rs || []).map((r) => rcard(r, D)).join("")}</div>
     </section>
   </div>`;
