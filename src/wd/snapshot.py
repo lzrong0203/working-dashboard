@@ -18,7 +18,7 @@ SUMMARY_MAX = 600
 PROMPT_MAX = 240
 
 # Fields dropped when a realm is configured with send = "minimal".
-CONTENT_FIELDS = ("cwd", "git_branch", "ai_title", "away_summary", "last_prompt", "tmux")
+CONTENT_FIELDS = ("cwd", "git_branch", "ai_title", "away_summary", "last_prompt", "tmux", "bridge_session_id")
 
 
 @dataclass

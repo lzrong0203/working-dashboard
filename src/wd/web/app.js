@@ -1,40 +1,23 @@
-// Shell: data sources (this hub + peer hubs), merge, view registry.
+// Shell: data sources (this hub + peer hubs), merge, chrome, routing.
 // Each realm's hub is fetched directly by the browser; no hub ever copies
 // another realm's data.
-
-export const WD = {
-  views: [],
-  register(view) { this.views.push(view); },
-  sources: new Map(), // url -> {url, state, error, es}
-  active: localStorageGet("wd.view") || "sessions",
-};
-
-function localStorageGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
-function localStorageSet(k, v) { try { localStorage.setItem(k, v); } catch { /* private mode */ } }
-
-export const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-
-export function ago(ms, now = Date.now()) {
-  if (!ms) return "";
-  const s = Math.max(0, Math.round((now - ms) / 1000));
-  if (s < 60) return `${s} 秒`;
-  if (s < 3600) return `${Math.round(s / 60)} 分`;
-  if (s < 86400 * 2) return `${(s / 3600).toFixed(s < 36000 ? 1 : 0)} 小時`;
-  return `${Math.round(s / 86400)} 天`;
-}
+import { WD, esc, lsSet } from "./core.js";
+import "./views/sessions.js"; // views register themselves on import
+import "./views/items.js";
 
 // Merged read model across all reachable hubs.
 export function merged() {
-  const out = { sessions: [], items: [], sources: [], events: [], realms: [], offline: [] };
+  const out = { sessions: [], items: [], sources: [], events: [], realms: [], offline: [], itemErrors: [] };
   for (const src of WD.sources.values()) {
     if (!src.state) { out.offline.push(src); continue; }
     const st = src.state;
     if (out.realms.includes(st.realm)) continue; // same hub reached via two URLs
     out.realms.push(st.realm);
-    out.sessions.push(...st.sessions);
-    out.items.push(...st.items.map((it) => ({ ...it, realm: st.realm })));
-    out.sources.push(...st.sources);
-    out.events.push(...st.events.map((e) => ({ ...e, realm: st.realm })));
+    out.sessions.push(...(st.sessions || []));
+    out.items.push(...(st.items || []).map((it) => ({ ...it, realm: st.realm })));
+    out.sources.push(...(st.sources || []).map((s) => ({ ...s, realm: st.realm })));
+    out.events.push(...(st.events || []).map((e) => ({ ...e, realm: st.realm })));
+    out.itemErrors.push(...(st.item_errors || []).map((e) => `${st.realm}: ${e}`));
   }
   out.sessions.sort((a, b) => b.attention.level - a.attention.level || (a.status === "gone") - (b.status === "gone") || (b.status_since || 0) - (a.status_since || 0));
   return out;
@@ -44,18 +27,18 @@ function connect(url) {
   const src = { url, state: null, error: null, es: null };
   WD.sources.set(url, src);
   const base = url.replace(/\/$/, "");
-  fetch(`${base}/api/state`).then((r) => r.json()).then((st) => { src.state = st; src.error = null; render(); }).catch((e) => { src.error = String(e); render(); });
-  const open = () => {
+  const accept = (st) => {
+    src.state = st; src.error = null;
+    for (const p of st.hub?.peers || []) if (!WD.sources.has(p)) connect(p);
+    render();
+  };
+  fetch(`${base}/api/state`).then((r) => r.json()).then(accept).catch((e) => { src.error = String(e); render(); });
+  if (typeof EventSource !== "undefined") {
     const es = new EventSource(`${base}/api/events`);
     src.es = es;
-    es.addEventListener("state", (ev) => {
-      src.state = JSON.parse(ev.data); src.error = null;
-      for (const p of src.state.hub?.peers || []) if (!WD.sources.has(p)) connect(p);
-      render();
-    });
+    es.addEventListener("state", (ev) => accept(JSON.parse(ev.data)));
     es.onerror = () => { src.error = "disconnected"; render(); };
-  };
-  open();
+  }
 }
 
 function renderChrome(m) {
@@ -68,14 +51,14 @@ function renderChrome(m) {
   document.title = urgent ? `(${urgent}) Working Dashboard` : "Working Dashboard";
 
   const tabs = document.getElementById("tabs");
-  tabs.innerHTML = WD.views.map((v) => `<button role="tab" data-view="${v.id}" aria-selected="${v.id === WD.active}">${esc(v.label)}</button>`).join("");
-  tabs.querySelectorAll("button").forEach((b) => b.onclick = () => { WD.active = b.dataset.view; localStorageSet("wd.view", WD.active); render(); });
+  tabs.innerHTML = WD.views.map((v) => `<button role="tab" data-view="${esc(v.id)}" aria-selected="${v.id === WD.active}">${esc(v.label)}</button>`).join("");
+  tabs.querySelectorAll("button").forEach((b) => { b.onclick = () => { WD.active = b.dataset.view; lsSet("wd.view", WD.active); render(); }; });
 
   document.getElementById("sources").innerHTML = [...WD.sources.values()].map((s) => {
     const realm = s.state?.realm || s.url.replace(/^https?:\/\//, "");
     const cls = s.state && !s.error ? "ok" : "down";
     const title = s.error ? `${s.url}: ${s.error}` : s.url;
-    return `<span class="src ${cls} realm-${esc(s.state?.realm || "x")}" title="${esc(title)}">${esc(realm)}</span>`;
+    return `<span class="src ${cls}" title="${esc(title)}">${esc(realm)}</span>`;
   }).join("");
   document.getElementById("clock").textContent = `更新於 ${new Date().toLocaleTimeString()}`;
 }
@@ -92,10 +75,6 @@ export function render() {
     if (view) view.render(document.getElementById("view"), m);
   });
 }
-
-// Views register themselves on import.
-await import("./views/sessions.js");
-await import("./views/items.js");
 
 connect(location.origin);
 setInterval(render, 15000); // keep relative times fresh

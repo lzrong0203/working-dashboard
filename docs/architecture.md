@@ -99,6 +99,28 @@ never produce merge conflicts.
   `deploy/systemd/wd-hub.service` (`Nice=19`, `CPUQuota`, `MemoryMax`,
   `IOSchedulingClass=idle`).
 
+## Robustness
+
+- **Card writes are serialised.** Every item operation runs under an exclusive
+  `flock` on the data dir. Each card is validated *together with* the other
+  cards it modifies (for example, the target of a `supersedes` edge) before
+  anything is written. Files are replaced atomically.
+- **Retries are safe.** Item requests carry a request id (`rid`). The hub stores
+  each response and returns it again for a replay, so a lost reply never applies
+  a request twice. Spooled requests replay in submission order, and new requests
+  queue behind any backlog.
+- **One bad card can't stop the board.** Malformed or duplicate cards are
+  skipped and listed on the board. Every SQLite write runs in a transaction that
+  rolls back on error.
+- **The hub host is protected.** `wd serve` and every ssh-spawned `wd rpc`
+  lower their own priority (SCHED_IDLE, nice 19, idle I/O on Linux), so the
+  protection doesn't depend on the service manager. Sockets have timeouts, event
+  streams are capped, and ntfy delivery runs on its own thread. A session is
+  marked notified only after ntfy accepted the push.
+- **Realms can't leak.** A hub checks that every session in a snapshot carries
+  the snapshot's realm, host and profile. An unmapped `CLAUDE_CONFIG_DIR` is an
+  error, never a guess.
+
 ## Roadmap
 
 - **M1** (done): session board, item cards, `wd exp` / `wd item` CLI, the

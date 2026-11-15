@@ -24,7 +24,11 @@ VOLATILE = ("updated_at",)
 def build_envelopes(cfg: cfgmod.Config, collectors: dict[str, ClaudeCollector]) -> list[dict]:
     envs = []
     for p in cfg.profiles:
-        col = collectors.setdefault(p.label, ClaudeCollector(p.config_dir, cfg.host, p.label, p.realm))
+        # keyed by the full identity, so a collector can never serve another realm
+        ident = f"{p.label}|{p.config_dir}|{p.realm}"
+        col = collectors.get(ident)
+        if col is None:
+            col = collectors[ident] = ClaudeCollector(p.config_dir, cfg.host, p.label, p.realm)
         send_mode = cfg.realm(p.realm).send
         sessions = [redact(s, send_mode).to_dict() for s in col.collect()]
         envs.append({
@@ -80,6 +84,8 @@ def run(cfg: cfgmod.Config, once: bool = False, print_only: bool = False) -> int
             for realm in {p.realm for p in cfg.profiles}:
                 try:
                     replay_spool(cfg, realm)
+                except HubUnreachable:
+                    pass  # reported by the ingest path above; retried next loop
                 except Exception as e:  # never let the spool kill the agent
                     print(f"[wd agent] spool {realm}: {e}", file=sys.stderr)
         if once or print_only:

@@ -1,5 +1,5 @@
 // Sessions view: what needs you first, then every machine's sessions.
-import { WD, esc, ago } from "../app.js";
+import { WD, esc, ago, ikey } from "../core.js";
 
 const STATUS_LABEL = { waiting: "等你", busy: "執行中", idle: "閒置", gone: "已結束", unknown: "?" };
 const STALE_S = 180; // a source silent this long is probably offline
@@ -11,7 +11,7 @@ function card(s, now, itemsById) {
   const att = s.attention || { level: 0, reason: "" };
   const link = s.bridge_session_id ? `https://claude.ai/code/${encodeURIComponent(s.bridge_session_id)}` : "";
   const items = (s.linked_items || []).map((id) => {
-    const it = itemsById.get(id);
+    const it = itemsById.get(ikey(s.realm, id));
     return `<span class="chip item" title="${esc(it?.hypothesis || "")}">${esc(it?.title || id)}</span>`;
   }).join("");
   const meta = [base(s.cwd), s.git_branch && `⎇ ${s.git_branch}`, s.tmux && `tmux ${s.tmux}`].filter(Boolean).map(esc).join(" · ");
@@ -41,7 +41,7 @@ WD.register({
   label: "Sessions",
   render(el, m) {
     const now = Date.now();
-    const itemsById = new Map(m.items.map((it) => [it.id, it]));
+    const itemsById = new Map(m.items.map((it) => [ikey(it.realm, it.id), it]));
     const live = m.sessions.filter((s) => s.status !== "gone");
     const needs = live.filter((s) => s.attention.level >= 2);
     const hosts = [...new Set([...m.sources.map((s) => s.host), ...live.map((s) => s.host)])].sort();

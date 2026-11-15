@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -73,6 +74,17 @@ class CollectorTest(unittest.TestCase):
             f.write('ompt": "finished line"}\n')
         self.assertEqual(tail.update().last_prompt, "finished line")
 
+    def test_replaced_transcript_resets_state(self):
+        tail = TranscriptTail(self.tpath)
+        self.assertEqual(tail.update().ai_title, "Demo title")
+        size = self.tpath.stat().st_size
+        repl = self.tpath.with_suffix(".new")
+        line = json.dumps({"type": "last-prompt", "lastPrompt": "x"}) + "\n"
+        repl.write_text((line * (size // len(line) + 1))[:size - 1] + "\n")  # same size, new inode
+        os.replace(repl, self.tpath)
+        st = tail.update()
+        self.assertEqual(st.ai_title, "")  # stale title dropped
+
 
 class SnapshotTest(unittest.TestCase):
     def test_minimal_drops_content_and_clips(self):
@@ -81,8 +93,9 @@ class SnapshotTest(unittest.TestCase):
         full = redact(SessionSnap(**{**s.__dict__}), "full")
         self.assertLessEqual(len(full.ai_title), 120)
         self.assertEqual(full.status, "unknown")
+        s.bridge_session_id = "session_x"
         m = redact(s, "minimal")
-        self.assertEqual((m.cwd, m.ai_title, m.away_summary, m.last_prompt), ("", "", "", ""))
+        self.assertEqual((m.cwd, m.ai_title, m.away_summary, m.last_prompt, m.bridge_session_id), ("", "", "", "", ""))
 
 
 class ItemsTest(unittest.TestCase):
@@ -120,6 +133,31 @@ class ItemsTest(unittest.TestCase):
         op_set(self.store, {"ref": new, "add_edges": [{"type": "supersedes", "to": "base"}]})
         self.assertEqual(self.store.resolve("base").meta["status"], "superseded")
 
+    def test_supersedes_at_creation_marks_old(self):
+        op_new(self.store, {"title": "v2", "from": "base", "rel": "supersedes", "hypothesis": "h"})
+        self.assertEqual(self.store.resolve("base").meta["status"], "superseded")
+
+    def test_rejected_update_changes_nothing(self):
+        new = op_new(self.store, {"title": "v2", "hypothesis": "h"})["id"]
+        with self.assertRaises(ItemError):
+            op_set(self.store, {"ref": new, "fields": {"status": "bogus"}, "add_edges": [{"type": "supersedes", "to": "base"}]})
+        self.assertEqual(self.store.resolve("base").meta["status"], "running")
+
+    def test_ids_cannot_escape_and_never_overwrite(self):
+        for bad in ("../escaped", "a/b", "..", ".hidden", "x" * 200):
+            with self.assertRaises(ItemError):
+                op_new(self.store, {"title": "x", "id": bad, "hypothesis": "h"})
+        self.assertFalse((self.store.root / "escaped.md").exists())
+        with self.assertRaises(ItemError):
+            op_new(self.store, {"title": "again", "id": self.base, "hypothesis": "h"})
+
+    def test_fingerprint_sees_deletions(self):
+        b = op_new(self.store, {"title": "b", "hypothesis": "h"})["id"]
+        fp = self.store.fingerprint()
+        (self.store.dir / f"{self.base}.md").unlink()  # not the newest card
+        self.assertNotEqual(fp, self.store.fingerprint())
+        self.assertTrue(b)
+
 
 class StoreTest(unittest.TestCase):
     def env(self, *sessions):
@@ -140,12 +178,78 @@ class StoreTest(unittest.TestCase):
         self.assertIn(("busy", "waiting"), kinds)
         self.assertIn(("idle", "gone"), kinds)
 
-    def test_notify_once_per_episode(self):
+    def test_notify_once_per_episode_and_only_after_delivery(self):
         st = Store(Path(tempfile.mkdtemp()) / "t.db")
-        self.assertTrue(st.should_notify("k", 3, 3))
-        self.assertFalse(st.should_notify("k", 3, 3))
-        self.assertFalse(st.should_notify("k", 0, 3))  # episode ends
-        self.assertTrue(st.should_notify("k", 3, 3))
+        hot = {"key": "k", "session_id": "s1", "status": "waiting", "status_since": 100, "attention": {"level": 3}}
+        cold = {**hot, "status": "busy", "status_since": 200, "attention": {"level": 0}}
+        self.assertEqual(len(st.notify_candidates([hot], 3)), 1)
+        self.assertEqual(len(st.notify_candidates([hot], 3)), 1)  # not delivered yet -> still pending
+        st.mark_notified("k", "s1", 100, 3)
+        self.assertEqual(st.notify_candidates([hot], 3), [])  # delivered
+        st.notify_candidates([cold], 3)  # episode ends
+        again = {**hot, "status_since": 300}
+        self.assertEqual(len(st.notify_candidates([again], 3)), 1)
+        self.assertEqual(len(st.notify_candidates([{**again, "session_id": "s2"}], 3)), 1)  # pid reused
+
+    def test_stale_delivery_does_not_suppress_next_episode(self):
+        st = Store(Path(tempfile.mkdtemp()) / "t.db")
+        first = {"key": "k", "session_id": "s1", "status": "waiting", "status_since": 100, "attention": {"level": 3}}
+        st.notify_candidates([{**first, "status": "busy", "attention": {"level": 0}}], 3)  # went busy...
+        st.mark_notified("k", "s1", 100, 3)  # ...then the old job finished
+        second = {**first, "status_since": 500}
+        self.assertEqual(len(st.notify_candidates([second], 3)), 1)
+
+    def test_notifier_never_requeues_a_delivered_episode(self):
+        from wd.config import Notify
+        from wd.hub import notify
+
+        sent, marks = [], []
+        orig = notify.post
+        notify.post = lambda n, title, msg: sent.append(msg) or True
+        try:
+            nt = notify.Notifier(Notify(ntfy_topic="t"), lambda *a: marks.append(a))
+            job = lambda: notify.Job([("k", "s1", 100, 3)], "t", "m")
+            nt.submit([job()])
+            for _ in range(100):
+                if marks:
+                    break
+                time.sleep(0.01)
+            nt.submit([job()])  # stale candidate list from before the marker
+            time.sleep(0.05)
+        finally:
+            notify.post = orig
+        self.assertEqual(len(sent), 1)
+
+    def test_session_id_change_on_same_pid_is_a_new_session(self):
+        st = Store(Path(tempfile.mkdtemp()) / "t.db")
+        a = self.snap(1, "waiting")
+        st.ingest(self.env(a))
+        b = self.snap(1, "waiting")
+        b.session_id = "other"
+        st.ingest(self.env(b))
+        ev = [(e["session_id"], e["from_status"], e["to_status"]) for e in st.state("personal")["events"]]
+        self.assertIn(("s1", "waiting", "gone"), ev)
+        self.assertIn(("other", None, "waiting"), ev)
+
+    def test_malformed_field_types_are_skipped(self):
+        tmp = Path(tempfile.mkdtemp())
+        items = ItemStore(tmp, autocommit=False)
+        (tmp / "items").mkdir(parents=True)
+        (tmp / "items" / "bad.md").write_text("---\nid: bad-1\ntype: experiment\ntitle: t\nstatus: running\nsessions: 123\n---\n")
+        st = Store(tmp / "t.db")
+        self.assertEqual(st.reindex_items(items), 0)
+        self.assertIn("sessions", st.state("personal")["item_errors"][0])
+
+    def test_reindex_survives_bad_and_duplicate_cards(self):
+        tmp = Path(tempfile.mkdtemp())
+        items = ItemStore(tmp, autocommit=False)
+        op_new(items, {"title": "good", "id": "good-1", "hypothesis": "h"})
+        (tmp / "items" / "scalar.md").write_text("---\n123\n---\n")
+        (tmp / "items" / "copy.md").write_text((tmp / "items" / "good-1.md").read_text())
+        st = Store(tmp / "t.db")
+        self.assertEqual(st.reindex_items(items), 1)
+        self.assertEqual(len(st.state("personal")["item_errors"]), 2)
+        st.ingest(self.env(self.snap(1, "busy")))  # writer lock was released
 
 
 class RpcTest(unittest.TestCase):
@@ -157,6 +261,81 @@ class RpcTest(unittest.TestCase):
         res = rpc.handle(cfg, {"op": "ingest", "realm": "work", "envelope": {}})
         self.assertFalse(res["ok"])
         self.assertIn("realm", res["error"])
+
+    def _cfg(self):
+        tmp = Path(tempfile.mkdtemp())
+        cfgfile = tmp / "c.toml"
+        cfgfile.write_text(f'host = "hub"\nhome = "{tmp}"\n[hub]\nrealm = "personal"\ndata_dir = "{tmp}/data"\ngit_autocommit = false\n')
+        return cfgmod.load(cfgfile)
+
+    def test_envelope_must_match_realm_and_source(self):
+        cfg = self._cfg()
+        s = SessionSnap(realm="work", host="h", profile="p", pid=1, session_id="x").to_dict()
+        res = rpc.handle(cfg, {"op": "ingest", "realm": "personal", "envelope": {"realm": "personal", "host": "h", "profile": "p", "sessions": [s]}})
+        self.assertFalse(res["ok"])
+        res = rpc.handle(cfg, {"op": "ingest", "realm": "personal", "envelope": {"realm": "work", "host": "h", "profile": "p", "sessions": []}})
+        self.assertFalse(res["ok"])
+
+    def test_retried_request_is_applied_once(self):
+        cfg = self._cfg()
+        new = {"op": "item.new", "rid": "r1", "args": {"id": "e-1", "title": "t", "hypothesis": "h"}}
+        self.assertTrue(rpc.handle(cfg, new)["ok"])
+        self.assertTrue(rpc.handle(cfg, new)["ok"])  # replay: same answer, no overwrite error
+        note = {"op": "item.note", "rid": "r2", "args": {"ref": "e-1", "text": "once"}}
+        rpc.handle(cfg, note)
+        rpc.handle(cfg, note)
+        body = rpc.handle(cfg, {"op": "item.get", "args": {"ref": "e-1"}})["body"]
+        self.assertEqual(body.count("once"), 1)
+
+
+class ConfigTest(unittest.TestCase):
+    def test_duplicate_labels_rejected(self):
+        f = Path(tempfile.mkdtemp()) / "c.toml"
+        f.write_text('[[profiles]]\nlabel="a"\nconfig_dir="/x"\nrealm="work"\n[[profiles]]\nlabel="a"\nconfig_dir="/y"\nrealm="personal"\n')
+        with self.assertRaises(cfgmod.ConfigError):
+            cfgmod.load(f)
+
+    def test_unmapped_config_dir_never_guesses_a_realm(self):
+        f = Path(tempfile.mkdtemp()) / "c.toml"
+        f.write_text('[[profiles]]\nlabel="p"\nconfig_dir="/x/.claude"\nrealm="personal"\n[hub]\nrealm="personal"\n')
+        cfg = cfgmod.load(f)
+        old = os.environ.get("CLAUDE_CONFIG_DIR")
+        os.environ["CLAUDE_CONFIG_DIR"] = "/somewhere/.claude-new"
+        try:
+            with self.assertRaises(cfgmod.ConfigError):
+                cfg.current_realm()
+        finally:
+            if old is None:
+                os.environ.pop("CLAUDE_CONFIG_DIR")
+            else:
+                os.environ["CLAUDE_CONFIG_DIR"] = old
+
+
+class SpoolTest(unittest.TestCase):
+    def test_legacy_names_sort_by_time(self):
+        from wd import transport
+
+        tmp = Path(tempfile.mkdtemp())
+        f = tmp / "c.toml"
+        f.write_text(f'home = "{tmp}"\n')
+        cfg = cfgmod.load(f)
+        d = transport.spool_dir(cfg, "personal")
+        (d / f"{int(time.time()) - 5}-aaaaaa.json").write_text('{"n": 0}')  # old second-resolution name
+        transport._spool(cfg, "personal", {"n": 1})
+        got = [json.loads(p.read_text())["n"] for p in transport._queued(cfg, "personal")]
+        self.assertEqual(got, [0, 1])
+
+    def test_fifo_names(self):
+        from wd import transport
+
+        tmp = Path(tempfile.mkdtemp())
+        f = tmp / "c.toml"
+        f.write_text(f'home = "{tmp}"\n')
+        cfg = cfgmod.load(f)
+        for i in range(30):
+            transport._spool(cfg, "personal", {"n": i})
+        got = [json.loads(p.read_text())["n"] for p in sorted(transport.spool_dir(cfg, "personal").glob("*.json"))]
+        self.assertEqual(got, list(range(30)))
 
 
 class GuardTest(unittest.TestCase):

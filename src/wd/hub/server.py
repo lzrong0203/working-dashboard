@@ -5,6 +5,8 @@
 * allows CORS from loopback origins so one browser tab can merge several
   realms' hubs (each forwarded to a different local port)
 * pushes state over Server-Sent Events when the DB or the item cards change
+* bounded: socket timeouts, a cap on concurrent SSE streams, notifications on
+  their own thread
 """
 
 from __future__ import annotations
@@ -19,15 +21,45 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from wd import config as cfgmod
+from wd.attention import URGENT
 from wd.hub import notify
 from wd.hub.store import Store
 from wd.items import ItemStore
-from wd.rpc import db_path
+from wd.rpc import db_path, lower_priority
 
 WEB = Path(__file__).resolve().parent.parent / "web"
 LOOPBACK = {"127.0.0.1", "localhost", "::1", "[::1]"}
 TICK_S = 1.0
 RECOMPUTE_S = 15.0
+MAX_SSE = 16
+MAX_CONNECTIONS = 64
+SOCKET_TIMEOUT_S = 30
+
+
+class BoundedHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with a hard cap on concurrent connections/threads."""
+
+    daemon_threads = True
+
+    def __init__(self, *a, max_connections: int = MAX_CONNECTIONS, **kw):
+        self._slots = threading.BoundedSemaphore(max_connections)
+        super().__init__(*a, **kw)
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            self.shutdown_request(request)  # over capacity: drop, don't queue
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
 
 
 def _hostname(value: str) -> str:
@@ -48,24 +80,33 @@ class Board:
     def __init__(self, cfg: cfgmod.Config):
         self.cfg = cfg
         self.realm = cfg.hub.realm
-        self.store = Store(db_path(cfg, self.realm))
+        path = db_path(cfg, self.realm)
+        self.store = Store(path)
         self.items = ItemStore(cfg.hub.data_dir, cfg.hub.git_autocommit)
         self.lock = threading.Lock()
         self.cond = threading.Condition()
         self.version = 0
         self.payload = b"{}"
         self._last_body = None
+        self.sse_slots = threading.BoundedSemaphore(MAX_SSE)
+        self.notifier = None
+        if cfg.hub.notify.ntfy_topic:
+            mark_store = Store(path)  # its own connection, used only by the notifier thread
+            self.notifier = notify.Notifier(cfg.hub.notify, mark_store.mark_notified)
         self._recompute(force=True)
 
     def _recompute(self, force: bool = False) -> None:
         with self.lock:
-            if self.items.mtime() != self.store.items_mtime():
-                self.store.reindex_items(self.items)
+            if self.items.fingerprint() != self.store.items_fingerprint():
+                with self.items.locked():
+                    self.store.reindex_items(self.items)
             state = self.store.state(self.realm)
-            try:
-                notify.check(self.store, state, self.cfg.hub.notify)
-            except Exception as e:
-                print(f"[wd serve] notify: {e}", file=sys.stderr)
+            jobs = []
+            if self.notifier:
+                cands = self.store.notify_candidates(state["sessions"], URGENT)
+                jobs = notify.build_jobs(self.realm, cands, state["sessions"], self.cfg.hub.notify, URGENT)
+        if jobs:
+            self.notifier.submit(jobs)
         body = json.dumps({k: v for k, v in state.items() if k != "now"}, ensure_ascii=False, sort_keys=True, default=str)
         if force or body != self._last_body:
             self._last_body = body
@@ -82,17 +123,18 @@ class Board:
             try:
                 with self.lock:
                     v = self.store.data_version()
-                    items_changed = self.items.mtime() != self.store.items_mtime()
+                    items_changed = self.items.fingerprint() != self.store.items_fingerprint()
                 if v != last_v or items_changed or time.time() - last_full > RECOMPUTE_S:
                     last_v, last_full = v, time.time()
                     self._recompute()
             except Exception as e:  # keep serving even if one recompute fails
-                print(f"[wd serve] recompute: {e}", file=sys.stderr)
+                print(f"[wd serve] recompute: {e!r}", file=sys.stderr)
 
 
 def make_handler(board: Board):
     class Handler(BaseHTTPRequestHandler):
         server_version = "wd"
+        timeout = SOCKET_TIMEOUT_S  # applies to reads and writes on the socket
 
         def log_message(self, fmt, *args):  # quiet
             pass
@@ -126,7 +168,13 @@ def make_handler(board: Board):
                 self.wfile.write(body)
                 return
             if path == "/api/events":
-                return self._sse()
+                if not board.sse_slots.acquire(blocking=False):
+                    self.send_error(503, "too many event streams")
+                    return
+                try:
+                    return self._sse()
+                finally:
+                    board.sse_slots.release()
             self._static(path)
 
         def _sse(self):
@@ -148,7 +196,7 @@ def make_handler(board: Board):
                     else:
                         self.wfile.write(b": ping\n\n")
                     self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
                 return
 
         def _static(self, path: str):
@@ -174,11 +222,11 @@ def serve(cfg: cfgmod.Config, port: int | None = None) -> int:
     if not cfg.hub.realm:
         print("this machine is not a hub: set [hub] realm in your config", file=sys.stderr)
         return 2
+    lower_priority()
     board = Board(cfg)
     threading.Thread(target=board.watch, daemon=True).start()
     port = port or cfg.hub.port
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(board))
-    httpd.daemon_threads = True
+    httpd = BoundedHTTPServer(("127.0.0.1", port), make_handler(board))
     print(f"wd hub ({board.realm}) on http://127.0.0.1:{port}", file=sys.stderr)
     try:
         httpd.serve_forever()

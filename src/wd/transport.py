@@ -7,10 +7,12 @@ spooled under ``$WD_HOME/spool/<realm>/`` and replayed by the agent loop.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import subprocess
 import time
 import uuid
+from contextlib import contextmanager
 
 from wd import config as cfgmod
 
@@ -117,26 +119,75 @@ def spool_dir(cfg: cfgmod.Config, realm: str):
     return d
 
 
-def send_or_spool(cfg: cfgmod.Config, realm: str, req: dict) -> dict:
-    try:
-        return send(cfg, realm, req)
-    except HubUnreachable as e:
-        name = f"{int(time.time())}-{uuid.uuid4().hex[:6]}.json"
-        (spool_dir(cfg, realm) / name).write_text(json.dumps(req, ensure_ascii=False))
-        return {"ok": True, "queued": True, "error": str(e), "id": req.get("args", {}).get("id")}
-
-
-def replay_spool(cfg: cfgmod.Config, realm: str) -> int:
-    sent = 0
-    for p in sorted(spool_dir(cfg, realm).glob("*.json")):
+@contextmanager
+def _spool_lock(cfg: cfgmod.Config, realm: str):
+    """One process at a time may enqueue, drain or send item requests for a realm
+    (the agent and any CLI call share the spool)."""
+    with open(spool_dir(cfg, realm) / ".lock", "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
         try:
-            res = send(cfg, realm, json.loads(p.read_text()))
-        except HubUnreachable:
-            break
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def _order(p) -> int:
+    """Submission time in ns from the file name (also accepts old second-resolution names)."""
+    head = p.name.split("-", 1)[0]
+    try:
+        n = int(head)
+    except ValueError:
+        return 0
+    return n if len(head) >= 19 else n * 1_000_000_000
+
+
+def _queued(cfg: cfgmod.Config, realm: str) -> list:
+    return sorted(spool_dir(cfg, realm).glob("*.json"), key=lambda p: (_order(p), p.name))
+
+
+def _spool(cfg: cfgmod.Config, realm: str, req: dict) -> None:
+    name = f"{time.time_ns():020d}-{uuid.uuid4().hex[:6]}.json"
+    d = spool_dir(cfg, realm)
+    tmp = d / f".{name}.tmp"
+    tmp.write_text(json.dumps(req, ensure_ascii=False))
+    tmp.rename(d / name)
+
+
+def send_or_spool(cfg: cfgmod.Config, realm: str, req: dict) -> dict:
+    """Item operations. Each carries a request id (``rid``) so the hub can drop
+    retries it already applied; order is preserved by draining the spool first,
+    all under the realm's spool lock."""
+    req = {**req, "rid": req.get("rid") or uuid.uuid4().hex}
+    queued = {"ok": True, "queued": True, "id": req.get("args", {}).get("id")}
+    with _spool_lock(cfg, realm):
+        try:
+            _drain(cfg, realm)
+            return send(cfg, realm, req)
+        except HubUnreachable as e:
+            _spool(cfg, realm, req)
+            return {**queued, "error": str(e)}
+
+
+def _drain(cfg: cfgmod.Config, realm: str) -> int:
+    sent = 0
+    for p in _queued(cfg, realm):
+        try:
+            req = json.loads(p.read_text())
+        except (FileNotFoundError, json.JSONDecodeError):
+            continue
+        res = send(cfg, realm, req)  # HubUnreachable propagates; order is kept
         # delivered (even if the hub rejected it, retrying won't help)
         if not res.get("ok"):
             p.rename(p.with_suffix(".rejected"))
         else:
-            p.unlink()
+            p.unlink(missing_ok=True)
             sent += 1
     return sent
+
+
+def replay_spool(cfg: cfgmod.Config, realm: str) -> int:
+    """Send queued requests in order; raises HubUnreachable if the hub is down."""
+    if not any(spool_dir(cfg, realm).glob("*.json")):
+        return 0
+    with _spool_lock(cfg, realm):
+        return _drain(cfg, realm)

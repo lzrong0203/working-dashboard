@@ -51,6 +51,7 @@ def pid_alive(pid: int) -> bool:
 
 @dataclass
 class TailState:
+    ident: tuple = ()  # (st_dev, st_ino) of the file the offset refers to
     offset: int = 0
     ai_title: str = ""
     last_prompt: str = ""
@@ -68,20 +69,24 @@ class TranscriptTail:
 
     def update(self) -> TailState:
         try:
-            size = self.path.stat().st_size
+            f = open(self.path, "rb")
         except FileNotFoundError:
             return self.state
-        st = self.state
-        if size < st.offset:  # truncated or replaced
-            st.offset = 0
-        start = st.offset
-        if start == 0 or size - start > MAX_CATCHUP_BYTES:
-            start = max(0, size - FIRST_READ_BYTES)
-        if start >= size:
-            return st
-        with open(self.path, "rb") as f:
+        with f:
+            fst = os.fstat(f.fileno())  # stat the file we actually read
+            size, ident = fst.st_size, (fst.st_dev, fst.st_ino)
+            if ident != self.state.ident or size < self.state.offset:
+                # new file or truncated: nothing we extracted before is valid
+                self.state = TailState(ident=ident)
+            st = self.state
+            start = st.offset
+            if start == 0 or size - start > MAX_CATCHUP_BYTES:
+                start = max(0, size - FIRST_READ_BYTES)
+            if start >= size:
+                return st
             f.seek(start)
             chunk = f.read(size - start)
+        size = start + len(chunk)  # what we really got, even if the file grew meanwhile
         if start > 0 and start != st.offset:
             # we jumped into the middle of a line; drop the partial first line
             nl = chunk.find(b"\n")

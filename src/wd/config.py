@@ -24,6 +24,10 @@ DEFAULT_CONFIG = Path("~/.config/wd/config.toml")
 DEFAULT_HOME = Path("~/.local/share/wd")
 
 
+class ConfigError(ValueError):
+    pass
+
+
 def expand(p: str | Path) -> Path:
     return Path(os.path.expandvars(str(p))).expanduser()
 
@@ -91,12 +95,23 @@ class Config:
         return None
 
     def current_realm(self) -> str:
-        """Realm for commands run from a shell or an agent's Bash tool."""
+        """Realm for commands run from a shell or an agent's Bash tool.
+
+        Never guesses for an explicitly set but unknown CLAUDE_CONFIG_DIR: a
+        session from an unmapped (possibly work) profile must not silently write
+        into another realm.
+        """
         if os.environ.get("WD_REALM"):
             return os.environ["WD_REALM"]
-        p = self.profile_for_config_dir(os.environ.get("CLAUDE_CONFIG_DIR"))
+        explicit = os.environ.get("CLAUDE_CONFIG_DIR")
+        p = self.profile_for_config_dir(explicit)
         if p:
             return p.realm
+        if explicit:
+            raise ConfigError(
+                f"CLAUDE_CONFIG_DIR={explicit} is not a configured profile; add it to "
+                f"{self.path or DEFAULT_CONFIG} or pass --realm / set WD_REALM"
+            )
         if self.hub.realm:
             return self.hub.realm
         return self.profiles[0].realm if self.profiles else "personal"
@@ -121,6 +136,12 @@ def load(path: str | Path | None = None) -> Config:
         Profile(p["label"], expand(p["config_dir"]), p.get("realm", p["label"]))
         for p in raw.get("profiles", [])
     ] or _default_profiles()
+    labels = [p.label for p in profiles]
+    if len(labels) != len(set(labels)):
+        raise ConfigError(f"duplicate profile labels in {path}: {labels}")
+    dirs = [str(p.config_dir) for p in profiles]
+    if len(dirs) != len(set(dirs)):
+        raise ConfigError(f"the same config_dir is listed twice in {path}")
 
     realms = {}
     for name, r in raw.get("realms", {}).items():

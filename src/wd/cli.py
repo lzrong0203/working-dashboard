@@ -169,8 +169,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    cfg = cfgmod.load(args.config)
+    try:
+        cfg = cfgmod.load(args.config)
+        return dispatch(cfg, args)
+    except cfgmod.ConfigError as e:
+        print(f"wd: {e}", file=sys.stderr)
+        return 2
 
+
+def _current_realm_or_error(cfg) -> str:
+    try:
+        return cfg.current_realm()
+    except cfgmod.ConfigError as e:
+        return f"error: {e}"
+
+
+def dispatch(cfg: cfgmod.Config, args) -> int:
     if args.cmd == "agent":
         from wd.agent import run
 
@@ -191,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
             "profiles": [{"label": p.label, "config_dir": str(p.config_dir), "realm": p.realm} for p in cfg.profiles],
             "realms": {k: {"hub": r.hub, "send": r.send} for k, r in cfg.realms.items()},
             "hub": {"realm": cfg.hub.realm, "port": cfg.hub.port, "data_dir": str(cfg.hub.data_dir), "peers": cfg.hub.peers, "notify": bool(cfg.hub.notify.ntfy_topic)},
-            "current_realm": cfg.current_realm(),
+            "current_realm": _current_realm_or_error(cfg),
         }, indent=2, ensure_ascii=False))
         return 0
     if args.cmd == "status":
