@@ -235,7 +235,9 @@ class Bridge:
             if status == "busy":
                 k["tool"] = f"wd-{uuid.uuid4().hex[:10]}"
                 ev("PreToolUse", tool_name=TOOL_FOR.get(act, "Tool"), tool_use_id=k["tool"], tool_input={})
-            elif status == "waiting":
+            elif status == "waiting":  # pixel-agents flags permission on the running tool, so start one first
+                k["tool"] = f"wd-{uuid.uuid4().hex[:10]}"
+                ev("PreToolUse", tool_name=TOOL_FOR.get(act, "Tool"), tool_use_id=k["tool"], tool_input={})
                 ev("Notification", notification_type="permission_prompt", message="waiting for you")
             else:
                 ev("Stop")
