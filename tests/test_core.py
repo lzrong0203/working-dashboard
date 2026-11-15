@@ -7,6 +7,7 @@ import os
 import tempfile
 import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 from wd import config as cfgmod
@@ -526,3 +527,65 @@ class RecapTest(unittest.TestCase):
         self.assertEqual((snap.status, snap.status_detail), ("busy", "shell"))
         self.assertLessEqual(len(snap.last_reply), 400)
         self.assertEqual(redact(SessionSnap("r", "h", "p", 1, SID, last_reply="secret"), "minimal").last_reply, "")
+
+    def test_title_age(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "t.jsonl"
+            rows = [{"type": "user", "timestamp": "2026-09-23T08:00:00Z", "gitBranch": "main"},
+                    {"type": "ai-title", "aiTitle": "first topic"},
+                    {"type": "user", "timestamp": "2026-11-15T10:00:00Z", "gitBranch": "main"},
+                    {"type": "ai-title", "aiTitle": "first topic"}]
+            p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+            tail = TranscriptTail(p)
+            st = tail.update()
+            t0 = int(datetime(2026, 9, 23, 8, tzinfo=timezone.utc).timestamp() * 1000)
+            self.assertEqual(st.ai_title_at, t0)  # re-appended later, still dated from the start
+            with p.open("a") as f:
+                f.write(json.dumps({"type": "user", "timestamp": "2026-11-16T01:00:00Z", "gitBranch": "x"}) + "\n")
+                f.write(json.dumps({"type": "ai-title", "aiTitle": "renamed"}) + "\n")
+            st = tail.update()
+            self.assertEqual(st.ai_title, "renamed")
+            self.assertEqual(st.ai_title_at, int(datetime(2026, 11, 16, 1, tzinfo=timezone.utc).timestamp() * 1000))
+
+
+class ResearchTest(unittest.TestCase):
+    def test_records_edges_overlay(self):
+        from wd.research import ResearchProject, ResearchSource
+        with tempfile.TemporaryDirectory() as d:
+            reg = Path(d) / "registry"
+            reg.mkdir()
+            recs = [
+                {"id": "REG-20260101-aaaa", "ts": "2026-01-01T10:00", "hypothesis": "【FOO-1：baseline】x", "status": "fail",
+                 "result": {"verdict": "FAIL", "cv": "too noisy"}, "lose_condition": "sd > 1"},
+                {"id": "REG-20260102-bbbb", "ts": "2026-01-02T10:00", "title": "FOO-1b：fix sampling", "status": "pass",
+                 "parent": "REG-20260101-aaaa（FOO-1）", "why": "REG-20260101-aaaa failed", "result": {"verdict": "PASS"}},
+                {"id": "REG-20260103-cccc", "ts": "2026-01-03T10:00", "hypothesis": "uses REG-20260102-bbbb constant", "status": "running（8/8）",
+                 "result": {"verdict": "NO-VERDICT（below noise）"}},
+            ]
+            for r in recs:
+                (reg / f"{r['id']}.json").write_text(json.dumps(r, ensure_ascii=False))
+            (reg / "broken.json").write_text("{nope")
+            proj = ResearchProject(ResearchSource("demo", reg), Path(d) / "data")
+            data = proj.data()
+            by = {r["id"]: r for r in data["records"]}
+            self.assertEqual(len(by), 3)
+            self.assertEqual(len(data["errors"]), 1)
+            a, b, c = by["REG-20260101-aaaa"], by["REG-20260102-bbbb"], by["REG-20260103-cccc"]
+            self.assertEqual((a["code"], a["family"], a["outcome"], a["title"]), ("FOO-1", "FOO", "fail", "FOO-1：baseline"))
+            self.assertEqual(b["family"], "FOO")
+            self.assertEqual({(e["type"], e["to"]) for e in b["edges"]}, {("follows", a["id"])})  # parent wins over why
+            self.assertEqual(c["outcome"], "inconclusive")
+            self.assertEqual(c["mentions"], [b["id"]])
+            fp = data["fp"]
+            ov = Path(d) / "data" / "research"
+            ov.mkdir(parents=True)
+            (ov / "demo.json").write_text(json.dumps({
+                "questions": [{"id": "q1", "title": "Does sampling matter?"}],
+                "records": {a["id"]: {"question": "q1", "why": "first try"}},
+                "edges": [{"from": c["id"], "to": b["id"], "type": "uses", "quote": "uses ... constant"},
+                          {"from": c["id"], "to": "REG-20990101-zzzz", "type": "because"}]}))
+            data = proj.data()
+            self.assertNotEqual(data["fp"], fp)  # overlay change is picked up
+            self.assertEqual(data["questions"][0]["id"], "q1")
+            self.assertEqual([e["type"] for e in data["edges"]], ["uses"])  # unknown target dropped
+            self.assertEqual({r["id"]: r.get("why_short") for r in data["records"]}[a["id"]], "first try")

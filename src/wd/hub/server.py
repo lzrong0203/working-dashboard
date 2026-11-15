@@ -18,7 +18,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from wd import config as cfgmod
 from wd.attention import URGENT
@@ -83,6 +83,9 @@ class Board:
         path = db_path(cfg, self.realm)
         self.store = Store(path)
         self.items = ItemStore(cfg.hub.data_dir, cfg.hub.git_autocommit)
+        from wd.research import ResearchProject
+
+        self.research = {r.name: ResearchProject(r, cfg.hub.data_dir) for r in cfg.hub.research}
         self.lock = threading.Lock()
         self.cond = threading.Condition()
         self.version = 0
@@ -101,6 +104,12 @@ class Board:
                 with self.items.locked():
                     self.store.reindex_items(self.items)
             state = self.store.state(self.realm)
+            state["research"] = []
+            for proj in self.research.values():
+                try:
+                    state["research"].append(proj.summary())
+                except Exception as e:  # a broken source must not take the board down
+                    print(f"[wd serve] research {proj.src.name}: {e!r}", file=sys.stderr)
             jobs = []
             if self.notifier:
                 cands = self.store.notify_candidates(state["sessions"], URGENT)
@@ -163,6 +172,28 @@ def make_handler(board: Board):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Cache-Control", "no-store")
+                self._cors()
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if path == "/api/research":
+                name = (parse_qs(urlsplit(self.path).query).get("name") or [""])[0]
+                proj = board.research.get(name)
+                if not proj:
+                    self.send_error(404, "no such research source")
+                    return
+                d = proj.data()
+                etag = f'"{d["fp"]}"'
+                if self.headers.get("If-None-Match") == etag:
+                    self.send_response(304)
+                    self._cors()
+                    self.end_headers()
+                    return
+                body = json.dumps(d, ensure_ascii=False).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("ETag", etag)
                 self._cors()
                 self.end_headers()
                 self.wfile.write(body)

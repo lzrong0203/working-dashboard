@@ -14,6 +14,8 @@ Vocabulary:
 
 from __future__ import annotations
 
+import re
+
 import os
 import socket
 import tomllib
@@ -69,6 +71,8 @@ class Hub:
     peers: list[str] = field(default_factory=list)
     notify: Notify = field(default_factory=Notify)
     git_autocommit: bool = True
+    # read-only research records served by the 研究 view (see wd/research.py)
+    research: list = field(default_factory=list)
 
 
 @dataclass
@@ -143,6 +147,27 @@ def _default_profiles() -> list[Profile]:
     return out
 
 
+def _research(raw: list) -> list:
+    from wd.research import DEFAULT_FIELDS, ResearchSource
+
+    out, names = [], set()
+    for r in raw or []:
+        name = str(r.get("name") or "")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,40}", name) or name in names:
+            raise ConfigError(f"[[hub.research]] needs a unique lowercase name, got {name!r}")
+        names.add(name)
+        fields = {k: [v] if isinstance(v, str) else list(v) for k, v in (r.get("fields") or {}).items()}
+        unknown = set(fields) - set(DEFAULT_FIELDS)
+        if unknown:
+            raise ConfigError(f"[[hub.research]] {name}: unknown fields {sorted(unknown)}")
+        out.append(ResearchSource(
+            name=name, path=expand(r["path"]), label=str(r.get("label") or ""),
+            format=str(r.get("format") or "prereg-json"),
+            overlay=expand(r["overlay"]) if r.get("overlay") else None, fields=fields,
+        ))
+    return out
+
+
 def load(path: str | Path | None = None) -> Config:
     path = expand(path or os.environ.get("WD_CONFIG") or DEFAULT_CONFIG)
     raw: dict = {}
@@ -187,6 +212,7 @@ def load(path: str | Path | None = None) -> Config:
             detail=n.get("detail", "full"),
         ),
         git_autocommit=bool(h.get("git_autocommit", True)),
+        research=_research(h.get("research", [])),
     )
 
     v = raw.get("view", {})

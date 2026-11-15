@@ -87,6 +87,42 @@ Edge types:
 The CLI talks to the hub only, so each realm's cards have a single writer and
 never produce merge conflicts.
 
+## Research records (研究 view)
+
+Some projects already keep one file per pre-registered experiment: hypothesis,
+pass/lose criteria, who decides, verdict. wd reads those files where they are
+and never copies them.
+
+```toml
+# hub config (private)
+[[hub.research]]
+name  = "proj"                      # lowercase key
+label = "Adsorption study"          # shown on the board
+path  = "~/projects/proj/registry"  # one JSON object per file
+# fields.why = ["motivation"]       # optional: map differently named fields
+```
+
+- **Normalising.** The hub reads each record's id, date, title, family code (for
+  example `HUMID-1c` → `HUMID`), status and verdict, then folds them into one
+  outcome: pass, fail, inconclusive, void, running or open.
+- **Links written in the records.** These come from structured fields only:
+  `parent` → *follows*, REG ids in `why` → *because*, re-adjudications,
+  `superseded_by`, and "取代 / 更正 REG-…" phrases.
+- **Mentions.** Every other id a record mentions is kept as a weak *mentions*
+  link. In practice most mentions mean "uses this constant or rule", so drawing
+  them as edges turns the map into one big tangle. The 被引用 mode uses them
+  instead, to show what many conclusions lean on.
+- **Overlay.** `<data_dir>/research/<name>.json` holds what the records don't
+  say:
+  - the question each record serves, and short why / result lines;
+  - typed links found in the prose (*because*, *follows*, *uses*, …), each
+    carrying the quote it rests on and `by: "ai"` until a person confirms it.
+
+  When the overlay has questions, the view groups records by question instead
+  of by family code.
+- **Cost.** The board's state carries only a fingerprint per source. Browsers
+  fetch `/api/research?name=…` when that fingerprint changes.
+
 ## Security properties
 
 - No HTTP write endpoint exists. The only writes are `ssh <hub> wd rpc`, so

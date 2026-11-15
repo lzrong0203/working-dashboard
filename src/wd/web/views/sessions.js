@@ -80,6 +80,18 @@ function recap(s, now, lines = 4) {
   return `<p class="summary recap" style="--lines:${Number(lines) || 4}" title="${esc(r.t)}"><b class="lbl">${esc(r.label)}</b>${esc(r.t)}${r.at ? ` <span class="age">· ${esc(ago(r.at, now))}前</span>` : ""}</p>`;
 }
 
+// Claude Code titles a session once, from its first exchange, and never updates
+// it. In a long-lived session that title is history: demote it under the recap.
+const TITLE_STALE_MS = 24 * 3600e3;
+const titleIsOld = (s, now) => s.ai_title_at && now - s.ai_title_at > TITLE_STALE_MS && (s.away_summary || s.last_reply);
+const md = (ms) => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()}`; };
+function freshTitle(s, now) {
+  return s.ai_title && !titleIsOld(s, now) ? `<h3 class="title">${esc(s.ai_title)}</h3>` : "";
+}
+function oldTitle(s, now) {
+  return s.ai_title && titleIsOld(s, now) ? `<p class="title-old" title="Claude Code 只在 session 一開始取一次標題，之後不會更新">最初主題（${esc(md(s.ai_title_at))}）：${esc(s.ai_title)}</p>` : "";
+}
+
 // ---- cards (desk, studio) ----------------------------------------------------
 function card(s, ctx, i = 0) {
   const now = ctx.now, look = WD.look;
@@ -95,8 +107,9 @@ function card(s, ctx, i = 0) {
     </header>
     ${att.reason ? `<p class="reason">${esc(att.reason)}</p>` : ""}
     ${isStale(s) ? `<p class="reason">這台機器 ${esc(ago(now - s.source_age_s * 1000, now))}沒回報，狀態可能過時</p>` : ""}
-    ${s.ai_title ? `<h3 class="title">${esc(s.ai_title)}</h3>` : ""}
+    ${freshTitle(s, now)}
     ${recap(s, now)}
+    ${oldTitle(s, now)}
     ${s.last_prompt && (s.away_summary || s.last_reply) ? `<p class="prompt" title="最後一句 prompt">› ${esc(s.last_prompt)}</p>` : ""}
     ${items ? `<div class="items">${items}</div>` : ""}
     ${s.status !== "gone" ? strip(s, now, ctx.hours) : ""}
@@ -112,8 +125,9 @@ function needCard(s, ctx) {
     <div class="wait" title="${esc(FORMAL[s.status] || "")}"><b>${esc(d.n)}</b><span>${esc(d.u)}</span><em>${esc(word(s.status))}</em></div>
     <div class="body">
       <header><span class="name">${esc(nameOf(s))}</span><span class="chip realm realm-${esc(s.realm)}">${esc(s.host)} · ${esc(s.profile)}</span></header>
-      ${s.ai_title ? `<h3 class="title">${esc(s.ai_title)}</h3>` : ""}
+      ${freshTitle(s, ctx.now)}
       ${recap(s, ctx.now, 3)}
+      ${oldTitle(s, ctx.now)}
       ${s.attention?.reason ? `<p class="reason">${esc(s.attention.reason)}</p>` : ""}
       ${linkedItems(s, ctx) ? `<div class="items">${linkedItems(s, ctx)}</div>` : ""}
     </div>
@@ -174,7 +188,7 @@ function renderFlap(ctx) {
     <tr class="st-${esc(s.status)}${isStale(s) ? " stale" : ""}">
       <td class="lamp"><i class="dot" aria-hidden="true"></i></td>
       <td class="fl c-name">${flaps(`${s.key}|n`, nameOf(s), 18)}</td>
-      <td class="fl c-dest">${flaps(`${s.key}|d`, s.ai_title || s.last_prompt || "—", 30)}</td>
+      <td class="fl c-dest">${flaps(`${s.key}|d`, (titleIsOld(s, ctx.now) ? s.last_prompt || s.ai_title : s.ai_title || s.last_prompt) || "—", 30)}</td>
       <td class="fl c-gate">${flaps(`${s.key}|g`, `${s.host}·${s.profile}`, 24)}</td>
       <td class="fl c-time">${flaps(`${s.key}|t`, ago(s.status_since, ctx.now), 9)}</td>
       <td class="fl c-st" title="${esc(FORMAL[s.status] || "")}">${flaps(`${s.key}|s`, word(s.status), 8)}</td>
@@ -204,8 +218,9 @@ function note(s, ctx) {
   <article class="note st-${esc(s.status)}${isStale(s) ? " stale" : ""}" style="--note:${color};--tilt:${tilt}deg">
     <i class="pin" aria-hidden="true"></i>
     <header><span class="name">${esc(nameOf(s))}</span>${statusBadge(s, ctx.now)}</header>
-    ${s.ai_title ? `<h3 class="title">${esc(s.ai_title)}</h3>` : ""}
+    ${freshTitle(s, ctx.now)}
     ${recap(s, ctx.now, 3)}
+    ${oldTitle(s, ctx.now)}
     ${s.attention?.reason ? `<p class="reason">${esc(s.attention.reason)}</p>` : ""}
     <footer><span class="meta">${esc(s.host)} · ${esc(s.profile)}</span>${openLink(s)}</footer>
   </article>`;

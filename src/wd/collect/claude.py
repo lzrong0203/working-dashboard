@@ -31,6 +31,24 @@ FIRST_READ_BYTES = 4 * 1024 * 1024
 MAX_CATCHUP_BYTES = 8 * 1024 * 1024
 
 
+def _first_ts(f) -> int:
+    """Timestamp of the first record that has one (reads at most 256 KB)."""
+    pos = f.tell()
+    try:
+        f.seek(0)
+        for line in f.read(256 * 1024).splitlines():
+            if b'"timestamp"' in line:
+                try:
+                    ms = _iso_ms(json.loads(line).get("timestamp", ""))
+                except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+                    continue
+                if ms:
+                    return ms
+        return 0
+    finally:
+        f.seek(pos)
+
+
 def _iso_ms(ts: str) -> int:
     try:
         return int(datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp() * 1000)
@@ -61,6 +79,9 @@ class TailState:
     last_reply: str = ""
     last_reply_at: int = 0
     git_branch: str = ""
+    ai_title_at: int = 0  # when this title was (probably) written; Claude Code never refreshes it
+    first_ts: int = 0  # first timestamp in the transcript
+    last_ts: int = 0  # latest timestamp seen while reading
 
 
 class TranscriptTail:
@@ -82,6 +103,8 @@ class TranscriptTail:
                 # new file or truncated: nothing we extracted before is valid
                 self.state = TailState(ident=ident)
             st = self.state
+            if not st.first_ts:
+                st.first_ts = _first_ts(f)
             start = st.offset
             if start == 0 or size - start > MAX_CATCHUP_BYTES:
                 start = max(0, size - FIRST_READ_BYTES)
@@ -116,8 +139,16 @@ class TranscriptTail:
             return
         t = d.get("type")
         st = self.state
+        if d.get("timestamp"):
+            st.last_ts = _iso_ms(d["timestamp"]) or st.last_ts
         if t == "ai-title" and d.get("aiTitle"):
-            st.ai_title = str(d["aiTitle"])
+            title = str(d["aiTitle"])
+            if title != st.ai_title:
+                # A change we watched happen dates itself; a title already there
+                # when we started reading dates from the transcript's start
+                # (Claude Code titles a session once, early, and re-appends it).
+                st.ai_title_at = (st.last_ts or st.first_ts) if st.ai_title else st.first_ts
+                st.ai_title = title
         elif t == "last-prompt" and d.get("lastPrompt"):
             st.last_prompt = str(d["lastPrompt"])
         elif t == "system" and d.get("subtype") == "away_summary" and d.get("content"):
@@ -246,6 +277,7 @@ class ClaudeCollector:
                     bridge_session_id=str(d.get("bridgeSessionId") or ""),
                     git_branch=t.git_branch if t else "",
                     ai_title=t.ai_title if t else "",
+                    ai_title_at=t.ai_title_at if t else 0,
                     away_summary=t.away_summary if t else "",
                     away_summary_at=t.away_summary_at if t else 0,
                     last_prompt=t.last_prompt if t else "",

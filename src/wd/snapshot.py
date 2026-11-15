@@ -46,6 +46,7 @@ class SessionSnap:
     tmux: str = ""
     bridge_session_id: str = ""
     ai_title: str = ""
+    ai_title_at: int = 0  # epoch ms; Claude Code writes the title once, early, so it ages
     away_summary: str = ""
     away_summary_at: int = 0  # epoch ms
     last_prompt: str = ""
@@ -90,5 +91,5 @@ def redact(snap: SessionSnap, send: str = "full") -> SessionSnap:
     if send == "minimal":
         for f in CONTENT_FIELDS:
             setattr(snap, f, "")
-        snap.away_summary_at = snap.last_reply_at = 0
+        snap.away_summary_at = snap.last_reply_at = snap.ai_title_at = 0
     return snap

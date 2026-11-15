@@ -4,10 +4,11 @@
 import { WD, LOOKS, esc, lsSet, setLook, word, opener, probeOpener, openInProfile } from "./core.js";
 import "./views/sessions.js"; // views register themselves on import
 import "./views/items.js";
+import "./views/research.js";
 
 // Merged read model across all reachable hubs.
 export function merged() {
-  const out = { sessions: [], items: [], sources: [], events: [], realms: [], offline: [], itemErrors: [], historyHours: 12 };
+  const out = { sessions: [], items: [], sources: [], events: [], realms: [], offline: [], itemErrors: [], research: [], historyHours: 12 };
   for (const src of WD.sources.values()) {
     if (!src.state) { out.offline.push(src); continue; }
     const st = src.state;
@@ -17,6 +18,7 @@ export function merged() {
     out.items.push(...(st.items || []).map((it) => ({ ...it, realm: st.realm })));
     out.sources.push(...(st.sources || []).map((s) => ({ ...s, realm: st.realm })));
     out.events.push(...(st.events || []).map((e) => ({ ...e, realm: st.realm })));
+    out.research.push(...(st.research || []).map((r) => ({ ...r, realm: st.realm, base: src.url })));
     out.itemErrors.push(...(st.item_errors || []).map((e) => `${st.realm}: ${e}`));
     if (st.history_hours) out.historyHours = st.history_hours;
   }
@@ -59,7 +61,10 @@ function renderChrome(m) {
   document.title = urgent ? `(${urgent}) Working Dashboard` : "Working Dashboard";
 
   const tabs = document.getElementById("tabs");
-  tabs.innerHTML = WD.views.map((v) => `<button role="tab" data-view="${esc(v.id)}" aria-selected="${v.id === WD.active}">${esc(v.label)}</button>`).join("");
+  const shown = WD.views.filter((v) => !v.visible || v.visible(m));
+  // a tab whose data hasn't arrived yet is hidden, not forgotten
+  const eff = shown.some((v) => v.id === WD.active) ? WD.active : shown[0]?.id;
+  tabs.innerHTML = shown.map((v) => `<button role="tab" data-view="${esc(v.id)}" aria-selected="${v.id === eff}">${esc(v.label)}</button>`).join("");
   tabs.querySelectorAll("button").forEach((b) => { b.onclick = () => { WD.active = b.dataset.view; lsSet("wd.view", WD.active); render(); }; });
 
   document.getElementById("sources").innerHTML = [...WD.sources.values()].map((s) => {
@@ -82,7 +87,7 @@ export function render() {
     pending = false;
     const m = merged();
     renderChrome(m);
-    const view = WD.views.find((v) => v.id === WD.active) || WD.views[0];
+    const view = WD.views.find((v) => v.id === WD.active && (!v.visible || v.visible(m))) || WD.views[0];
     if (view) view.render(document.getElementById("view"), m);
   }, 16);
 }
@@ -96,6 +101,7 @@ document.addEventListener("click", (ev) => {
   openInProfile(a.dataset.openRealm, a.href).catch(() => window.open(a.href, "_blank", "noopener"));
 });
 
+WD.rerender = render; // views call this instead of importing app.js (no cycles)
 connect(location.origin);
 probeOpener().then(render);
 setInterval(render, 15000); // keep relative times fresh
