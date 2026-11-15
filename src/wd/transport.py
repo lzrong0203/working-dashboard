@@ -30,11 +30,17 @@ class HubUnreachable(RuntimeError):
     pass
 
 
+# realm -> target that answered last; tried first next time (a roaming laptop
+# shouldn't wait out a timeout on the office address every push)
+_last_good: dict[str, str] = {}
+
+
 def send(cfg: cfgmod.Config, realm: str, req: dict, timeout: float = 30) -> dict:
     r = cfg.realm(realm)
     req = {**req, "realm": realm}
     errors = []
-    for target in r.hub:
+    targets = sorted(r.hub, key=lambda t: t != _last_good.get(realm))
+    for target in targets:
         if target == "local":
             from wd import rpc  # local import keeps agent-only installs light
 
@@ -53,7 +59,9 @@ def send(cfg: cfgmod.Config, realm: str, req: dict, timeout: float = 30) -> dict
         out = (p.stdout or "").strip().splitlines()
         if out:
             try:
-                return json.loads(out[-1])
+                res = json.loads(out[-1])
+                _last_good[realm] = target
+                return res
             except json.JSONDecodeError:
                 pass
         errors.append(f"{target}: exit {p.returncode} {(p.stderr or '').strip()[:200]}")

@@ -48,6 +48,8 @@ def run(cfg: cfgmod.Config, once: bool = False, print_only: bool = False) -> int
     collectors: dict[str, ClaudeCollector] = {}
     last_digest: dict[str, str] = {}
     last_sent: dict[str, float] = {}
+    last_error: dict[str, str] = {}
+    retry_at: dict[str, float] = {}
     while True:
         for env in build_envelopes(cfg, collectors):
             if print_only:
@@ -58,6 +60,8 @@ def run(cfg: cfgmod.Config, once: bool = False, print_only: bool = False) -> int
             due = time.time() - last_sent.get(key, 0) >= cfg.heartbeat_s
             if d == last_digest.get(key) and not due:
                 continue
+            if time.time() < retry_at.get(key, 0):  # hub was unreachable; back off
+                continue
             try:
                 res = send(cfg, env["realm"], {"op": "ingest", "envelope": env})
                 if res.get("ok"):
@@ -65,7 +69,13 @@ def run(cfg: cfgmod.Config, once: bool = False, print_only: bool = False) -> int
                 else:
                     print(f"[wd agent] {key}: hub rejected: {res.get('error')}", file=sys.stderr)
             except HubUnreachable as e:
-                print(f"[wd agent] {key}: hub unreachable: {e}", file=sys.stderr)
+                if last_error.get(key) != str(e):  # log changes, not every retry
+                    print(f"[wd agent] {time.strftime('%H:%M')} {key}: hub unreachable: {e}", file=sys.stderr)
+                    last_error[key] = str(e)
+                retry_at[key] = time.time() + 60
+                continue
+            last_error.pop(key, None)
+            retry_at.pop(key, None)
         if not print_only:
             for realm in {p.realm for p in cfg.profiles}:
                 try:

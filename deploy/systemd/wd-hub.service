@@ -18,7 +18,6 @@ CPUSchedulingPolicy=idle
 Nice=19
 IOSchedulingClass=idle
 LimitAS=2G
-LimitNPROC=256
 CPUQuota=10%
 MemoryMax=256M
 NoNewPrivileges=yes
