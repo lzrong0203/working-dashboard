@@ -62,6 +62,13 @@ def attention(s: dict, now_ms: int, source_age_s: float) -> tuple[int, str]:
             return SOON, f"可能還在等你{what and '：' + what}（{_span(mins)}）"
         return FYI, ""
 
+    since = int(s.get("status_since") or now_ms)
+    if status == "waiting" and int(s.get("last_reply_at") or 0) > since + 60_000:
+        # Claude kept talking after the wait began: the conversation moved on
+        # (Remote Control from the phone/web) and only a dialog in the local
+        # terminal is left open. Worth knowing, not worth a push.
+        return FYI, f"終端機上有個{('「' + what + '」') if what else '確認'}畫面沒按，但對話之後仍在進行"
+
     if status == "waiting":
         # A permission prompt you are about to answer anyway shouldn't buzz:
         # it goes to the top of the board at once, and pushes after a grace.

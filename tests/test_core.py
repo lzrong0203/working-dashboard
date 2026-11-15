@@ -502,6 +502,10 @@ class AttentionTest(unittest.TestCase):
         self.assertEqual(self.lvl("busy", 30), OK)
         self.assertEqual(self.lvl("busy", 60 * 4), FYI)
         self.assertEqual(self.lvl("gone", 1), OK)
+        from wd.attention import attention
+        now = 10_000_000_000  # waiting since 10 h, but Claude replied 5 min ago (Remote Control)
+        moved_on = {"status": "waiting", "status_since": now - 600 * 60_000, "last_reply_at": now - 5 * 60_000, "status_detail": "permission prompt"}
+        self.assertEqual(attention(moved_on, now, 5)[0], FYI)
 
 
 class RecapTest(unittest.TestCase):
