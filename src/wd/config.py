@@ -44,6 +44,8 @@ class Realm:
     hub_cmd: str = "~/.local/bin/wd"
     # "full" sends titles/summaries/prompts; "minimal" sends status + timestamps only
     send: str = "full"
+    # local port `wd view` forwards to this realm's hub (0 = don't)
+    view_port: int = 0
 
 
 @dataclass
@@ -128,6 +130,7 @@ def load(path: str | Path | None = None) -> Config:
             hub=[hub] if isinstance(hub, str) else list(hub),
             hub_cmd=r.get("hub_cmd", "~/.local/bin/wd"),
             send=r.get("send", "full"),
+            view_port=int(r.get("view_port", 0)),
         )
     for p in profiles:
         realms.setdefault(p.realm, Realm(name=p.realm))

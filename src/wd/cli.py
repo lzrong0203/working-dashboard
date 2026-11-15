@@ -111,6 +111,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--port", type=int)
 
     sub.add_parser("rpc", help="hub side of the ssh transport")
+    v = sub.add_parser("view", help="forward every realm's hub to localhost and open the board")
+    v.add_argument("--no-open", action="store_true")
     sub.add_parser("config", help="print effective config")
     st = sub.add_parser("status", parents=[common], help="sessions in the terminal")
     st.add_argument("--all", action="store_true", help="include ended sessions")
@@ -194,6 +196,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "status":
         return cmd_status(cfg, args)
+    if args.cmd == "view":
+        import webbrowser
+
+        from wd.transport import open_view
+
+        results = open_view(cfg)
+        for name, port, ok in results:
+            print(f"{'✓' if ok else '✗'} {name:10} http://127.0.0.1:{port}")
+        first = next((p for _, p, ok in results if ok), None)
+        if first and not args.no_open:
+            webbrowser.open(f"http://127.0.0.1:{first}")
+        return 0 if first else 1
 
     session = _session_ref(cfg)
     if args.cmd == "exp" and args.sub == "new":

@@ -58,6 +58,8 @@ mkdir -p ~/.config/wd && cp examples/home-server.toml ~/.config/wd/config.toml  
 wd agent --print        # see exactly what would be sent; sends nothing
 wd serve &              # on the hub
 wd agent                # on every machine (see deploy/ for launchd/systemd units)
+wd view                 # on your laptop: forwards every realm's hub over ssh, opens the board
+wd status               # same data in the terminal
 ```
 
 Record experiments from inside an agent session (the session is attached

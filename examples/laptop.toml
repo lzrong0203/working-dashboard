@@ -13,7 +13,9 @@ realm = "work"
 
 [realms.personal]
 hub = ["home-server"]
+view_port = 8740          # `wd view` forwards the hub here
 
 [realms.work]
 # tried in order: direct when on the office network, via a jump host otherwise
 hub = ["work-mini", "work-mini-remote"]
+view_port = 8741
