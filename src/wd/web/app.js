@@ -1,7 +1,7 @@
 // Shell: data sources (this hub + peer hubs), merge, chrome, routing.
 // Each realm's hub is fetched directly by the browser; no hub ever copies
 // another realm's data.
-import { WD, LOOKS, esc, lsSet, setLook, word, opener, probeOpener, openInProfile } from "./core.js";
+import { WD, LOOKS, esc, lsSet, setLook, word, opener, probeOpener, openInProfile, inRealm, realmLabel, setRealm } from "./core.js";
 import "./views/sessions.js"; // views register themselves on import
 import "./views/items.js";
 import "./views/research.js";
@@ -44,9 +44,26 @@ function connect(url) {
   }
 }
 
+function renderRealmFilter(m) {
+  const box = document.getElementById("realmfilter");
+  if (!box) return;
+  const realms = [...new Set([...m.realms, ...(WD.realm ? [WD.realm] : [])])].sort();
+  if (realms.length < 2 && !WD.realm) { box.innerHTML = ""; return; }
+  // a hidden realm still says when something there needs you
+  const urgentIn = (r) => m.sessions.filter((s) => s.realm === r && s.attention.level >= 3).length;
+  const btn = (r, label) => {
+    const n = r && r !== WD.realm ? urgentIn(r) : 0;
+    return `<button type="button" data-realm="${esc(r)}" aria-pressed="${WD.realm === r}">${esc(label)}${n ? ` <b class="rf-urgent" title="${n} 個在等你">${n}</b>` : ""}</button>`;
+  };
+  box.innerHTML = btn("", "全部") + realms.map((r) => btn(r, realmLabel(r))).join("");
+  box.querySelectorAll("button").forEach((b) => { b.onclick = () => { setRealm(b.dataset.realm); render(); }; });
+}
+
 function renderChrome(m) {
-  const by = (st) => m.sessions.filter((s) => s.status === st).length;
-  const urgent = m.sessions.filter((s) => s.attention.level >= 3).length;
+  renderRealmFilter(m);
+  const mine = m.sessions.filter((s) => inRealm(s.realm));
+  const by = (st) => mine.filter((s) => s.status === st).length;
+  const urgent = mine.filter((s) => s.attention.level >= 3).length;
   document.getElementById("counts").innerHTML = `
     <span class="count urgent ${urgent ? "on" : ""}"><b>${urgent}</b>需要你</span>
     <span class="count busy"><b>${by("busy")}</b>${esc(word("busy"))}</span>
@@ -58,7 +75,9 @@ function renderChrome(m) {
     sel.onchange = () => { setLook(sel.value); render(); };
   }
   if (sel) sel.value = WD.look;
-  document.title = urgent ? `(${urgent}) Working Dashboard` : "Working Dashboard";
+  // the browser tab counts every realm, filtered or not: a hidden realm must still be able to call you
+  const allUrgent = m.sessions.filter((s) => s.attention.level >= 3).length;
+  document.title = allUrgent ? `(${allUrgent}) Working Dashboard` : "Working Dashboard";
 
   const tabs = document.getElementById("tabs");
   const shown = WD.views.filter((v) => !v.visible || v.visible(m));

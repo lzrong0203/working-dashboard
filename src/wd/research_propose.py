@@ -44,7 +44,7 @@ LEVELS = {1: "只有想法", 2: "模擬對模擬", 3: "對公開實測", 4: "對
 SYSTEM = (
     "你是研究整理助理，幫一位研究者把大量、分散的實驗登記整理成人看得懂的內容。"
     "只根據提供的文字，不要猜測沒寫的事；不確定就說不確定。用繁體中文、白話、短句，"
-    "不要用內部實驗代號（像 HUMID-1c、E8b、REG-…）當主詞。只輸出符合 JSON schema 的結果。"
+    "不要用內部實驗代號（像 ABL-2c、E3、REG-…）當主詞。只輸出符合 JSON schema 的結果。"
 )
 
 S_EDGE = {"type": "object", "properties": {"to": {"type": "string"}, "type": {"type": "string", "enum": list(LINK_TYPES)},

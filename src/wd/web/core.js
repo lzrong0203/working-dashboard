@@ -30,7 +30,18 @@ export const WD = {
   sources: new Map(), // url -> {url, state, error, es}
   active: lsGet("wd.view") || "sessions",
   look: docEl?.dataset?.look || "desk",
+  realm: lsGet("wd.realm") || "", // "" = every realm; otherwise show only this realm's sessions
 };
+
+// Realm filter for the session board. Realm names come from each hub's config;
+// the two conventional ones get a Chinese label, anything else shows as-is.
+const REALM_LABEL = { personal: "個人", work: "工作" };
+export const realmLabel = (r) => REALM_LABEL[r] || r;
+export const inRealm = (r) => !WD.realm || r === WD.realm;
+export function setRealm(r) {
+  WD.realm = r || "";
+  lsSet("wd.realm", WD.realm);
+}
 
 export function setLook(id) {
   if (!LOOKS.some((l) => l.id === id)) return;

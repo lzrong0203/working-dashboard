@@ -103,7 +103,7 @@ path  = "~/projects/proj/registry"  # one JSON object per file
 ```
 
 - **Normalising.** The hub reads each record's id, date, title, family code (for
-  example `HUMID-1c` → `HUMID`), status and verdict, then folds them into one
+  example `ABL-2c` → `ABL`), status and verdict, then folds them into one
   outcome: pass, fail, inconclusive, void, running or open.
 - **Links written in the records.** These come from structured fields only:
   `parent` → *follows*, REG ids in `why` → *because*, re-adjudications,

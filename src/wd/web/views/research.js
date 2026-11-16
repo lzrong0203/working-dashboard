@@ -426,6 +426,11 @@ function meeting(rep, d, D) {
   const stale = rep.fingerprint && d.records_fp && rep.fingerprint !== d.records_fp;
   html.push(`<header class="mhead"><h2>${esc(rep.title || "研究進度")}</h2><p class="muted">資料截止 ${esc(rep.cutoff || "")}・${esc(rep.status === "draft" ? "草稿，研究者確認前不要對外" : rep.status || "")}${stale ? "・之後有新的登記，這份還沒更新" : ""}</p></header>`);
   md.push(`# ${rep.title || "研究進度"}`, "", `資料截止 ${rep.cutoff || ""}。${rep.status === "draft" ? "草稿，研究者確認前不要對外。" : ""}`, "");
+  // hand corrections made after generation (who checked it, what changed); a rerun replaces the whole file
+  for (const r of Array.isArray(rep.reviews) ? rep.reviews : []) {
+    html.push(`<p class="mreview">核對紀錄 ${esc(r.at || "")}・${esc(r.by || "")}：${esc(r.note || "")}</p>`);
+    md.push(`> 核對紀錄 ${r.at || ""}・${r.by || ""}：${r.note || ""}`, "");
+  }
   html.push(`<section><h3>1　一頁結論</h3><dl class="mdl"><dt>目標</dt><dd>${esc(op.goal)}</dd><dt>成功標準</dt><dd>${esc(op.success)}</dd><dt>現在的答案</dt><dd><b>${esc(op.answer)}</b></dd><dt>難在哪</dt><dd>${esc(op.why_hard)}</dd></dl>
     ${(op.numbers || []).length ? `<ul class="nums">${op.numbers.map((x) => `<li>${esc(x.text)}${sup(x.cites)}${(x.warnings || []).length ? ` <span class="fwarn">⚠ 數字 ${x.warnings.map(esc).join("、")} 在出處找不到</span>` : ""}</li>`).join("")}</ul>` : ""}</section>`);
   md.push("## 1　一頁結論", "", `- **目標**：${op.goal || ""}`, `- **成功標準**：${op.success || ""}`, `- **現在的答案**：${op.answer || ""}`, `- **難在哪**：${op.why_hard || ""}`, ...(op.numbers || []).map((x) => `- ${x.text}${supMd(x.cites)}`), "");
@@ -444,8 +449,13 @@ function meeting(rep, d, D) {
     md.push("## 4　還不知道、可能翻盤的", "", ...rep.unknowns.map((x) => `- **${x.item}**${supMd(x.cites)}：什麼結果會改變結論——${x.change_if}`), "");
   }
   if ((rep.decisions || []).length) {
-    html.push(`<section><h3>5　需要決定的事</h3><table class="mtable"><thead><tr><th>決定什麼</th><th>選項與代價</th><th>建議</th><th>誰</th><th>何時前</th></tr></thead><tbody>${rep.decisions.map((x) => `<tr><td>${esc(x.decision)}</td><td>${esc(x.options)}</td><td>${esc(x.recommendation)}</td><td>${esc(x.who)}</td><td>${esc(x.by_when)}</td></tr>`).join("")}</tbody></table></section>`);
-    md.push("## 5　需要決定的事", "", "| 決定什麼 | 選項與代價 | 建議 | 誰 | 何時前 |", "|---|---|---|---|---|", ...rep.decisions.map((x) => `| ${x.decision} | ${x.options} | ${x.recommendation} | ${x.who} | ${x.by_when} |`), "");
+    html.push(`<section><h3>5　需要決定的事</h3><table class="mtable"><thead><tr><th>決定什麼</th><th>選項與代價</th><th>建議</th><th>誰</th><th>何時前</th></tr></thead><tbody>${rep.decisions.map((x) => `<tr><td>${esc(x.decision)}</td><td>${esc(x.options)}</td><td>${esc(x.recommendation)}${x.basis ? `<br><span class="muted">依據：${esc(x.basis)}</span>` : ""}</td><td>${esc(x.who)}</td><td>${esc(x.by_when)}</td></tr>`).join("")}</tbody></table></section>`);
+    md.push("## 5　需要決定的事", "", "| 決定什麼 | 選項與代價 | 建議 | 誰 | 何時前 |", "|---|---|---|---|---|", ...rep.decisions.map((x) => `| ${x.decision} | ${x.options} | ${x.recommendation}${x.basis ? `（依據：${x.basis}）` : ""} | ${x.who} | ${x.by_when} |`), "");
+  }
+  // questions that look open but were already settled (pre-registered rules, earlier re-adjudications)
+  if ((rep.settled || []).length) {
+    html.push(`<section><h3>已經定了、不必上會的</h3><ul>${rep.settled.map((x) => `<li><b>${esc(x.item)}</b>：${esc(x.decided)}${x.basis ? `<br><span class="muted">依據：${esc(x.basis)}</span>` : ""}</li>`).join("")}</ul></section>`);
+    md.push("## 已經定了、不必上會的", "", ...rep.settled.map((x) => `- **${x.item}**：${x.decided}${x.basis ? `（依據：${x.basis}）` : ""}`), "");
   }
   if ((rep.next_weeks || []).length) {
     html.push(`<section><h3>6　接下來四週</h3><ul>${rep.next_weeks.map((x) => `<li><b>${esc(x.task)}</b>：做完會知道 ${esc(x.learn)}</li>`).join("")}</ul></section>`);

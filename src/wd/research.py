@@ -12,9 +12,9 @@ them instead of trusting them.
 
 Overlay (JSON)::
 
-    {"questions": [{"id": "q-humidity", "title": "...", "answer": "...",
+    {"questions": [{"id": "q-scaling", "title": "...", "answer": "...",
                     "state": "supported|refuted|open|mixed", "note": "..."}],
-     "records":   {"REG-...": {"question": "q-humidity", "why": "...", "result": "..."}},
+     "records":   {"REG-...": {"question": "q-scaling", "why": "...", "result": "..."}},
      "edges":     [{"from": "REG-b", "to": "REG-a", "type": "because",
                     "quote": "...", "by": "ai"}]}
 """
@@ -33,7 +33,7 @@ MAX_FILE = 4 * 1024 * 1024
 MAX_FILES = 5000
 MAX_TOTAL = 256 * 1024 * 1024
 RID = re.compile(r"REG-\d{8}-[0-9a-f]{4}")
-# family codes such as HUMID-1c, DFT-GATE-1, E8b, S2 (but not REG-... ids)
+# family codes such as ABL-2c, EVAL-GATE-1, E3, S2 (but not REG-... ids)
 CODE = re.compile(r"(?<![A-Za-z0-9])((?!REG-)[A-Z][A-Z0-9]{1,}(?:-[A-Z0-9]+)+[a-z]?|E\d+[a-z]?|S\d)(?![A-Za-z0-9])")
 
 # Edge types, newest record -> the older record it points at.

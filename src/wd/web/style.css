@@ -130,6 +130,12 @@ a { color: inherit; }
 .tabs button[aria-selected="true"] { color: var(--ink); box-shadow: inset 0 -2px 0 var(--accent); }
 :root[data-look="studio"] .tabs button, :root[data-look="studio"] .looks select { border-radius: 0; }
 .looks { display: inline-flex; align-items: center; gap: .35rem; color: var(--muted); font-size: .82rem; }
+.realmfilter { display: inline-flex; border: var(--border); border-radius: 8px; overflow: hidden; background: var(--panel); }
+.realmfilter button { font: inherit; font-size: .82rem; color: var(--muted); background: none; border: 0; padding: .3rem .7rem; cursor: pointer; }
+.realmfilter button + button { border-left: var(--border); }
+.realmfilter button[aria-pressed="true"] { color: var(--ink); background: color-mix(in srgb, var(--accent) 14%, transparent); font-weight: 600; }
+.realmfilter .rf-urgent { display: inline-block; min-width: 1.3em; padding: 0 .3em; border-radius: 999px; background: var(--waiting); color: #fff; font: 700 .7rem/1.4 var(--font-num); text-align: center; }
+:root[data-look="studio"] .realmfilter { border-radius: 0; }
 .sources { display: flex; gap: .35rem; flex-wrap: wrap; }
 .src { font-size: .75rem; padding: .08rem .5rem; border-radius: 999px; border: var(--border); background: var(--panel); }
 .src.ok::before { content: "● "; color: var(--s-idle); }
@@ -169,6 +175,11 @@ h2 small { font: 400 .78rem var(--font); color: var(--muted); margin-left: .35re
 .summary.recap { -webkit-line-clamp: var(--lines, 4); }
 .summary .lbl { font-weight: 600; font-size: .72rem; color: var(--muted); margin-right: .45em; letter-spacing: .04em; }
 .prompt { margin: 0; color: var(--muted); font-size: .82rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 更多: shown only under text the browser actually clipped */
+.x.open { display: block; -webkit-line-clamp: unset !important; white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+.xmore { align-self: flex-end; justify-self: end; margin: -.2rem 0 0 auto; display: block; font: inherit; font-size: .72rem; color: var(--muted);
+  background: none; border: 0; padding: 0 .1rem; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+.xmore:hover { color: var(--ink); }
 .items { display: flex; flex-wrap: wrap; gap: .3rem; }
 .meta { color: var(--muted); font: .72rem var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .open { margin-left: auto; font-size: .8rem; color: var(--busy); text-decoration: none; white-space: nowrap; font-weight: 600; }
@@ -636,6 +647,7 @@ h3.sub { font-size: .92rem; margin: .9rem 0 .4rem; display: flex; gap: .6rem; al
 .fcite i { font-style: normal; font-weight: 600; margin-right: .3em; }
 .fcite.r-supports i { color: var(--o-pass); } .fcite.r-against i { color: var(--o-fail); } .fcite.r-limits i { color: var(--o-inconclusive); }
 .fwarn { font-size: .72rem; color: #a35200; background: #fff4e6; border-radius: 6px; padding: .2rem .45rem; margin: 0; }
+.mreview { font-size: .78rem; color: var(--ink); background: color-mix(in srgb, #4a7bb7 13%, transparent); border-left: 3px solid #4a7bb7; border-radius: 4px; padding: .35rem .6rem; margin: .3rem 0 .6rem; }
 table.etable { width: 100%; border-collapse: collapse; font-size: .82rem; table-layout: fixed; }
 table.etable th { text-align: left; font-size: .7rem; color: var(--muted); padding: .3rem .35rem; border-bottom: 1px solid var(--line); }
 table.etable td { padding: .4rem .35rem; border-bottom: 1px solid var(--line); vertical-align: top; }

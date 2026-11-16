@@ -2,7 +2,7 @@
 // One data model, four looks (WD.look): desk, studio, flap, kanban.
 // Every state shows its word plus a second cue (shape, pose, lamp, column);
 // colour is never the only signal.
-import { WD, esc, ago, dur, ikey, opener, word, FORMAL, hash, strip } from "../core.js";
+import { WD, esc, ago, dur, ikey, opener, word, FORMAL, hash, strip, inRealm } from "../core.js";
 import { mountOffice } from "./office.js";
 
 const STALE_S = 180; // a source silent this long is probably offline
@@ -69,6 +69,30 @@ function studioArt(s, i) {
   return `<svg class="scene" style="--i:${i % 7}" viewBox="0 0 40 24" shape-rendering="crispEdges" aria-hidden="true">${p.join("")}</svg>`;
 }
 
+// Clamped text (recap, last prompt, old title) gets a 更多 toggle when -- and
+// only when -- the browser actually cut it. Which ones are open survives the
+// re-render every hub update triggers.
+const opened = new Set();
+const xa = (key) => ` data-x="${esc(key)}"`;
+const xc = (key) => (opened.has(key) ? " x open" : " x");
+function markClipped(el) {
+  if (!el.querySelectorAll) return; // no DOM (smoke test)
+  for (const n of el.querySelectorAll(".x")) {
+    const open = n.classList.contains("open");
+    if (!open && n.scrollHeight <= n.clientHeight + 1 && n.scrollWidth <= n.clientWidth + 1) continue;
+    n.insertAdjacentHTML("afterend", `<button type="button" class="xmore"${xa(n.dataset.x)}>${open ? "收起" : "更多"}</button>`);
+  }
+}
+if (typeof document !== "undefined") {
+  document.addEventListener("click", (ev) => {
+    const b = ev.target.closest?.(".xmore");
+    if (!b) return;
+    const k = b.dataset.x;
+    if (opened.has(k)) opened.delete(k); else opened.add(k);
+    WD.rerender?.();
+  });
+}
+
 // What has this session been up to? The newer of Claude Code's own recap
 // (away_summary, written when you come back to a session) and Claude's latest
 // message to you, which usually closes a turn with its own summary.
@@ -77,8 +101,9 @@ function recap(s, now, lines = 4) {
   const away = s.away_summary ? { t: s.away_summary, at: s.away_summary_at || 0, label: "回顧" } : null;
   const reply = s.last_reply ? { t: plain(s.last_reply), at: s.last_reply_at || 0, label: s.status === "busy" ? "正在說" : "最後回覆" } : null;
   const r = away && reply ? (reply.at > away.at ? reply : away) : away || reply;
-  if (!r) return s.last_prompt ? `<p class="summary">› ${esc(s.last_prompt)}</p>` : "";
-  return `<p class="summary recap" style="--lines:${Number(lines) || 4}" title="${esc(r.t)}"><b class="lbl">${esc(r.label)}</b>${esc(r.t)}${r.at ? ` <span class="age">· ${esc(ago(r.at, now))}前</span>` : ""}</p>`;
+  if (!r) return s.last_prompt ? `<p class="summary${xc(`${s.key}|p`)}"${xa(`${s.key}|p`)}>› ${esc(s.last_prompt)}</p>` : "";
+  const k = `${s.key}|r`;
+  return `<p class="summary recap${xc(k)}"${xa(k)} style="--lines:${Number(lines) || 4}"><b class="lbl">${esc(r.label)}</b>${esc(r.t)}${r.at ? ` <span class="age">· ${esc(ago(r.at, now))}前</span>` : ""}</p>`;
 }
 
 // Claude Code titles a session once, from its first exchange, and never updates
@@ -90,7 +115,7 @@ function freshTitle(s, now) {
   return s.ai_title && !titleIsOld(s, now) ? `<h3 class="title">${esc(s.ai_title)}</h3>` : "";
 }
 function oldTitle(s, now) {
-  return s.ai_title && titleIsOld(s, now) ? `<p class="title-old" title="Claude Code 只在 session 一開始取一次標題，之後不會更新">最初主題（${esc(md(s.ai_title_at))}）：${esc(s.ai_title)}</p>` : "";
+  return s.ai_title && titleIsOld(s, now) ? `<p class="title-old${xc(`${s.key}|t`)}"${xa(`${s.key}|t`)} title="Claude Code 只在 session 一開始取一次標題，之後不會更新">最初主題（${esc(md(s.ai_title_at))}）：${esc(s.ai_title)}</p>` : "";
 }
 
 // ---- cards (desk, studio) ----------------------------------------------------
@@ -111,7 +136,7 @@ function card(s, ctx, i = 0) {
     ${freshTitle(s, now)}
     ${recap(s, now)}
     ${oldTitle(s, now)}
-    ${s.last_prompt && (s.away_summary || s.last_reply) ? `<p class="prompt" title="最後一句 prompt">› ${esc(s.last_prompt)}</p>` : ""}
+    ${s.last_prompt && (s.away_summary || s.last_reply) ? `<p class="prompt${xc(`${s.key}|p`)}"${xa(`${s.key}|p`)} title="最後一句 prompt">› ${esc(s.last_prompt)}</p>` : ""}
     ${items ? `<div class="items">${items}</div>` : ""}
     ${s.status !== "gone" ? strip(s, now, ctx.hours) : ""}
     <footer><span class="meta">${metaLine(s)}</span>${openLink(s)}</footer>
@@ -262,15 +287,17 @@ WD.register({
   id: "sessions",
   label: "Sessions",
   render(el, m) {
-    const live = m.sessions.filter((s) => s.status !== "gone");
+    const sessions = m.sessions.filter((s) => inRealm(s.realm));
+    const sources = m.sources.filter((s) => inRealm(s.realm));
+    const live = sessions.filter((s) => s.status !== "gone");
     const ctx = {
       now: Date.now(),
       hours: m.historyHours || 12,
       itemsById: new Map(m.items.map((it) => [ikey(it.realm, it.id), it])),
       live,
-      gone: m.sessions.filter((s) => s.status === "gone"),
-      sources: m.sources,
-      hosts: [...new Set([...m.sources.map((s) => s.host), ...live.map((s) => s.host)])].sort(),
+      gone: sessions.filter((s) => s.status === "gone"),
+      sources,
+      hosts: [...new Set([...sources.map((s) => s.host), ...live.map((s) => s.host)])].sort(),
     };
     const banner = m.offline.length ? `<p class="banner">暫時連不上 ${m.offline.map((s) => esc(s.state?.realm || s.url.replace(/^https?:\/\//, ""))).join("、")}，自動重試中（換網路後通道約 1 分鐘內會自己接回；一直沒好再執行 <code>wd view</code>）</p>` : "";
     if (WD.look === "office" && opener.pixel) {
@@ -283,5 +310,6 @@ WD.register({
     }
     const body = WD.look === "flap" ? renderFlap(ctx) : WD.look === "kanban" ? renderKanban(ctx) : renderCards(ctx);
     el.innerHTML = banner + body;
+    markClipped(el);
   },
 });

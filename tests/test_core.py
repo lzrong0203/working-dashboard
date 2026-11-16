@@ -525,9 +525,9 @@ class RecapTest(unittest.TestCase):
             self.assertEqual(st.last_reply, "做完了：三件事")
             self.assertEqual(st.activity, "run")  # the Bash call; the later text doesn't reset it
             self.assertGreater(st.last_reply_at, 0)
-        snap = redact(SessionSnap("r", "h", "p", 1, SID, status="shell", last_reply="x" * 900))
+        snap = redact(SessionSnap("r", "h", "p", 1, SID, status="shell", last_reply="x" * 3000))
         self.assertEqual((snap.status, snap.status_detail), ("busy", "shell"))
-        self.assertLessEqual(len(snap.last_reply), 400)
+        self.assertLessEqual(len(snap.last_reply), 1200)
         self.assertEqual(redact(SessionSnap("r", "h", "p", 1, SID, last_reply="secret"), "minimal").last_reply, "")
 
     def test_title_age(self):

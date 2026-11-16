@@ -18,8 +18,8 @@ STATUS_ALIASES = {"shell": "busy"}
 
 TITLE_MAX = 120
 SUMMARY_MAX = 600
-PROMPT_MAX = 240
-REPLY_MAX = 400
+PROMPT_MAX = 600
+REPLY_MAX = 1200
 DETAIL_MAX = 60
 
 # Fields dropped when a realm is configured with send = "minimal".
