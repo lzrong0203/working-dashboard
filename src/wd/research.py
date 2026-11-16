@@ -378,7 +378,15 @@ REG_KINDS = ("decision", "settled")
 REG_STATUS = ("confirmed", "dismissed")
 REG_TEXT = {"text": 300, "detail": 600, "who": 80, "by_when": 60, "note": 600, "from_text": 300}
 MAX_REG = 300
+MAX_ALIASES = 20
+MAX_HISTORY = 5
 _PUNCT_RE = re.compile(r"[\W_]+", re.UNICODE)
+_TOKENS = re.compile(r"[A-Za-z]+|\d+(?:\.\d+)?")
+_NEG = re.compile(r"[不沒未無非別勿]")
+
+
+class RegisterConflict(ValueError):
+    """The entry changed since the page read it (another tab, another person)."""
 
 
 def register_path(overlay_path: Path) -> Path:
@@ -391,57 +399,90 @@ def _reg_item(x) -> dict | None:
     out = {"id": _flat(x.get("id"), 40), "kind": x["kind"], "status": x["status"],
            "source": "report" if x.get("source") == "report" else "human", "at": _flat(x.get("at"), 40)}
     out.update({k: _flat(x.get(k), n) for k, n in REG_TEXT.items()})
+    rev = x.get("rev")
+    out["rev"] = rev if isinstance(rev, int) and not isinstance(rev, bool) and 0 <= rev < 10**9 else 0
     out["cites"] = [c for c in x.get("cites", []) if isinstance(c, str) and RID.fullmatch(c)][:12] if isinstance(x.get("cites"), list) else []
+    al = x.get("aliases")
+    out["aliases"] = [_flat(a, 300) for a in al if isinstance(a, str) and a.strip()][:MAX_ALIASES] if isinstance(al, list) else []
     ev = x.get("evidence")
     if isinstance(ev, dict) and isinstance(ev.get("id"), str) and RID.fullmatch(ev["id"]) and ev.get("quote"):
         out["evidence"] = {"id": ev["id"], "quote": _flat(ev["quote"], 300)}
     hist = x.get("history")
     out["history"] = [{k: _flat(h.get(k), 300) for k in ("at", "kind", "status", "text", "detail")}
-                      for h in hist if isinstance(h, dict)][-10:] if isinstance(hist, list) else []
+                      for h in hist if isinstance(h, dict)][-MAX_HISTORY:] if isinstance(hist, list) else []
     return out if re.fullmatch(r"h-[0-9a-z-]{4,36}", out["id"]) and (out["text"] or out["from_text"]) else None
 
 
-def read_register(path: Path) -> list[dict]:
+def _load_register(path: Path, strict: bool) -> list[dict]:
+    """strict (before a write): a file that exists but can't be read is an
+    error, so a write never replaces entries it couldn't see."""
     try:
         if path.stat().st_size > MAX_FILE:
-            return []
+            raise ValueError("確認清單太大，讀不進來")
         d = json.loads(path.read_text(encoding="utf-8"), parse_constant=_no_nan)
-    except (FileNotFoundError, ValueError, OSError):
+        items = d.get("items") if isinstance(d, dict) else None
+        if not isinstance(items, list):
+            raise ValueError("確認清單格式不對")
+    except FileNotFoundError:
         return []
-    items = d.get("items") if isinstance(d, dict) else None
-    return [y for y in map(_reg_item, items if isinstance(items, list) else []) if y][:MAX_REG]
+    except (ValueError, OSError) as e:
+        if strict:
+            raise ValueError(f"確認清單讀不了，為了不覆蓋，這次沒有寫入（{e}）") from None
+        return []
+    return [y for y in map(_reg_item, items) if y][:MAX_REG]
+
+
+def read_register(path: Path) -> list[dict]:
+    return _load_register(path, strict=False)
+
+
+def _norm_text(t: str) -> str:
+    """Wording without spacing or punctuation, except a decimal point (1.2 is not 12)."""
+    return _PUNCT_RE.sub("", re.sub(r"(?<=\d)\.(?=\d)", "點", t or "")).lower()
 
 
 def same_item(a: str, b: str) -> bool:
-    """Is a newly generated report item the one a person already confirmed or
-    dismissed? Runs reword items, so exact text can't be required; too loose a
-    match would hide a genuinely new item behind an old one."""
-    A, B = _PUNCT_RE.sub("", a or "").lower(), _PUNCT_RE.sub("", b or "").lower()
+    """Do two wordings look like the same item? Only a hint: runs reword items,
+    so exact text can't be required, but "方案 A" vs "方案 B" or "1.2 萬" vs
+    "12 萬" must not match, so letters, numbers and negation have to agree."""
+    A, B = _norm_text(a), _norm_text(b)
     if not A or not B:
         return False
     if A == B:
         return True
     if min(len(A), len(B)) < 4:
         return False
+    if sorted(_TOKENS.findall((a or "").lower())) != sorted(_TOKENS.findall((b or "").lower())):
+        return False
+    if bool(_NEG.search(a or "")) != bool(_NEG.search(b or "")):
+        return False
     sa, sb = set(A), set(B)
     return len(sa & sb) / len(sa | sb) >= 0.6
 
 
-def match_register(text: str, items: list[dict]) -> dict | None:
-    """The register entry a generated item corresponds to: its exact original
-    wording first, then a close rewording of either wording."""
-    norm = _PUNCT_RE.sub("", text or "").lower()
+def match_register(text: str, items: list[dict]) -> tuple[dict | None, str]:
+    """The register entry a generated item corresponds to, and how sure:
+    "exact" -- the same wording as one the person saw (their own text, the
+    generated text they acted on, or a wording they said is the same item);
+    "close" -- a likely rewording, shown as a hint for the person to decide."""
+    norm = _norm_text(text)
+    if norm:
+        for r in items:
+            if norm in {_norm_text(t) for t in (r["from_text"], r["text"], *r["aliases"]) if t}:
+                return r, "exact"
     for r in items:
-        if norm and norm == _PUNCT_RE.sub("", r["from_text"]).lower():
-            return r
-    return next((r for r in items if same_item(text, r["from_text"]) or same_item(text, r["text"])), None)
+        if any(same_item(text, t) for t in (r["from_text"], r["text"], *r["aliases"]) if t):
+            return r, "close"
+    return None, ""
 
 
 def update_register(path: Path, req: dict) -> list[dict]:
     """Apply one change from the page. ops: confirm (from a generated item, or a
     new one), dismiss (a generated item is wrong), update (edit an entry, e.g.
-    a decision that has since been made), remove (undo). Raises ValueError on a
-    bad request; returns the new list."""
+    a decision that has since been made), alias (another wording of the same
+    item), remove (undo). update / alias / remove carry the entry's ``rev``
+    when the page has one; a stale one raises RegisterConflict. Raises
+    ValueError on a bad request; returns the new list."""
     from datetime import datetime
 
     from wd.fileio import locked, write_json
@@ -454,45 +495,65 @@ def update_register(path: Path, req: dict) -> list[dict]:
     kind = req.get("kind")
     if kind is not None and kind not in REG_KINDS:
         raise ValueError("kind must be decision or settled")
+
+    def snapshot(e):
+        return {k: e.get(k, "") for k in ("at", "kind", "status", "text", "detail")}
+
     with locked(path):
-        items = read_register(path)
+        items = _load_register(path, strict=True)
         if op in ("confirm", "dismiss"):
             if op == "confirm" and not fields.get("text"):
                 raise ValueError("text required")
             if op == "dismiss" and not fields.get("from_text"):
                 raise ValueError("from_text required")
             same = next((r for r in items if fields.get("from_text") and r["from_text"] == fields["from_text"]), None)
-            entry = same or {"id": f"h-{datetime.now().strftime('%Y%m%d')}-{os.urandom(3).hex()}", "history": [],
-                             "source": "report" if fields.get("from_text") else "human"}
             if same:
-                entry["history"] = [*entry["history"], {k: entry.get(k, "") for k in ("at", "kind", "status", "text", "detail")}][-10:]
-            entry.update({**{k: "" for k in REG_TEXT}, **({k: v for k, v in same.items() if k in REG_TEXT} if same else {}), **fields,
-                          "kind": kind or (same or {}).get("kind") or "decision",
-                          "status": "confirmed" if op == "confirm" else "dismissed", "at": now})
-            entry["cites"] = [c for c in req.get("cites", []) if isinstance(c, str) and RID.fullmatch(c)][:12] if isinstance(req.get("cites"), list) else entry.get("cites", [])
-            if isinstance(req.get("evidence"), dict):
-                entry["evidence"] = req["evidence"]
-            if not same:
+                entry = same
+                entry["history"] = [*entry["history"], snapshot(entry)][-MAX_HISTORY:]
+            else:
                 if len(items) >= MAX_REG:
                     raise ValueError("too many entries")
+                ids = {r["id"] for r in items}
+                rid = ""
+                while not rid or rid in ids:
+                    rid = f"h-{datetime.now().strftime('%Y%m%d')}-{os.urandom(8).hex()}"
+                entry = {"id": rid, "history": [], "aliases": [], "rev": 0, **{k: "" for k in REG_TEXT},
+                         "source": "report" if fields.get("from_text") else "human"}
                 items.append(entry)
-        elif op in ("update", "remove"):
+            entry.update({**fields, "kind": kind or entry.get("kind") or "decision",
+                          "status": "confirmed" if op == "confirm" else "dismissed", "at": now, "rev": entry.get("rev", 0) + 1})
+            if isinstance(req.get("cites"), list):
+                entry["cites"] = [c for c in req["cites"] if isinstance(c, str) and RID.fullmatch(c)][:12]
+            if isinstance(req.get("evidence"), dict):
+                entry["evidence"] = req["evidence"]
+        elif op in ("update", "remove", "alias"):
             entry = next((r for r in items if r["id"] == req.get("id")), None)
             if not entry:
                 raise ValueError("no such entry")
+            if "rev" in req and req["rev"] != entry["rev"]:
+                raise RegisterConflict("這筆剛被別的地方改過")
             if op == "remove":
                 items.remove(entry)
+            elif op == "alias":
+                text = _flat(req.get("text"), 300)
+                if not text:
+                    raise ValueError("text required")
+                if text not in entry["aliases"]:
+                    entry["aliases"] = [*entry["aliases"], text][-MAX_ALIASES:]
+                entry["rev"] += 1
             else:
                 status = req.get("status", entry["status"])
                 if status not in REG_STATUS:
                     raise ValueError("bad status")
-                entry["history"] = [*entry["history"], {k: entry.get(k, "") for k in ("at", "kind", "status", "text", "detail")}][-10:]
-                entry.update({**fields, "kind": kind or entry["kind"], "status": status, "at": now})
+                entry["history"] = [*entry["history"], snapshot(entry)][-MAX_HISTORY:]
+                entry.update({**fields, "kind": kind or entry["kind"], "status": status, "at": now, "rev": entry["rev"] + 1})
                 if entry["status"] == "confirmed" and not entry["text"]:
                     raise ValueError("text required")
         else:
             raise ValueError("unknown op")
         clean = [y for y in map(_reg_item, items) if y]
+        if len(json.dumps({"items": clean}, ensure_ascii=False, indent=1).encode()) > MAX_FILE:
+            raise ValueError("確認清單已經太大，請先刪掉一些舊的項目")
         write_json(path, {"items": clean})
     return clean
 
@@ -617,9 +678,10 @@ class ResearchProject:
         if report:  # mark generated items a person already confirmed or dismissed
             for sec, key in (("decisions", "decision"), ("settled", "item")):
                 for x in report.get(sec, []):
-                    m = match_register(x.get(key, ""), register)
+                    m, how = match_register(x.get(key, ""), register)
                     if m:
-                        x["reg"] = {"id": m["id"], "status": m["status"], "kind": m["kind"]}
+                        x["reg"] = {"id": m["id"], "status": m["status"], "kind": m["kind"], "match": how,
+                                    "text": m["text"] or m["from_text"], "rev": m["rev"]}
         # field edges pointing at unknown ids are kept out of the graph
         for r in records:
             r["edges"] = [e for e in r["edges"] if e["from"] in ids and e["to"] in ids]

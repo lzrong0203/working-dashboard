@@ -78,6 +78,17 @@ def _hostname(value: str) -> str:
         return ""
 
 
+def _http_port(origin: str) -> int | None:
+    """The port of an http:// origin (80 when omitted); None for anything else."""
+    try:
+        u = urlsplit(origin)
+        if u.scheme != "http" or not u.hostname:
+            return None
+        return u.port or 80
+    except ValueError:
+        return None
+
+
 class Board:
     """Owns the DB connection; recomputes state and wakes SSE clients."""
 
@@ -118,16 +129,18 @@ class Board:
             if self.notifier:
                 cands = self.store.notify_candidates(state["sessions"], URGENT)
                 jobs = notify.build_jobs(self.realm, cands, state["sessions"], self.cfg.hub.notify, URGENT)
+            # publish under the same lock: a write request and the watch loop both
+            # recompute, and an older state must never be published after a newer one
+            body = json.dumps({k: v for k, v in state.items() if k != "now"}, ensure_ascii=False, sort_keys=True, default=str)
+            if force or body != self._last_body:
+                self._last_body = body
+                state["hub"] = {"realm": self.realm, "host": self.cfg.host, "peers": self.cfg.hub.peers}
+                with self.cond:
+                    self.payload = json.dumps(state, ensure_ascii=False, default=str).encode()
+                    self.version += 1
+                    self.cond.notify_all()
         if jobs:
             self.notifier.submit(jobs)
-        body = json.dumps({k: v for k, v in state.items() if k != "now"}, ensure_ascii=False, sort_keys=True, default=str)
-        if force or body != self._last_body:
-            self._last_body = body
-            state["hub"] = {"realm": self.realm, "host": self.cfg.host, "peers": self.cfg.hub.peers}
-            with self.cond:
-                self.payload = json.dumps(state, ensure_ascii=False, default=str).encode()
-                self.version += 1
-                self.cond.notify_all()
 
     def watch(self) -> None:
         last_v, last_full = None, time.time()
@@ -165,17 +178,14 @@ def make_handler(board: Board):
             origin on this hub's port, a peer hub's port or a realm's view port.
             Other local pages (dev servers, the pixel office) may read, not write."""
             origin = self.headers.get("Origin") or ""
-            u = urlsplit(origin)
-            if u.scheme != "http" or (u.hostname or "").lower() not in LOOPBACK:
-                return ""
-            try:
-                port = u.port
-            except ValueError:
+            port = _http_port(origin)
+            if not port or _hostname(origin) not in LOOPBACK:
                 return ""
             cfg = board.cfg
             ports = {self.server.server_address[1], cfg.hub.port}
-            ports |= {urlsplit(x).port for x in cfg.hub.peers if isinstance(x, str)}
+            ports |= {_http_port(x) for x in cfg.hub.peers if isinstance(x, str)}
             ports |= {r.view_port for r in cfg.realms.values() if r.view_port}
+            ports.discard(None)
             return origin if port in ports else ""
 
         def _json(self, code: int, body: dict):
@@ -239,10 +249,16 @@ def make_handler(board: Board):
             proj = board.research.get((parse_qs(url.query).get("name") or [""])[0])
             if not proj:
                 return self._json(404, {"ok": False, "error": "no such research source"})
+            from wd.research import RegisterConflict
+
             try:
                 self._body_read = True
-                req = json.loads(self.rfile.read(n))
-                items = proj.update_register(req)
+                raw = self.rfile.read(n)
+                if len(raw) != n:
+                    return self._json(400, {"ok": False, "error": "incomplete body"})
+                items = proj.update_register(json.loads(raw))
+            except RegisterConflict as e:
+                return self._json(409, {"ok": False, "error": str(e)[:200]})
             except (ValueError, TypeError, json.JSONDecodeError) as e:
                 return self._json(400, {"ok": False, "error": str(e)[:200]})
             board._recompute()  # the summary's fingerprint changes; other open pages re-read

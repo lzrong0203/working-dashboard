@@ -1075,7 +1075,7 @@ class GithubAndDecisionsTest(unittest.TestCase):
 
 class ConfirmedItemsTest(unittest.TestCase):
     def test_register_ops(self):
-        from wd.research import read_register, update_register
+        from wd.research import RegisterConflict, read_register, update_register
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "x.decisions.json"
             items = update_register(path, {"op": "confirm", "kind": "decision", "text": "門檻定多少", "who": "主管",
@@ -1096,9 +1096,33 @@ class ConfirmedItemsTest(unittest.TestCase):
                         {"op": "update", "id": "h-nope-0000"}, {"op": "drop"}, {"op": "update", "id": items[0]["id"], "status": "gone"}, []):
                 with self.assertRaises(ValueError):
                     update_register(path, bad)
-            items = update_register(path, {"op": "remove", "id": items[1]["id"]})
+            stale = items[2]["rev"] - 1
+            with self.assertRaises(RegisterConflict):  # another tab changed it since
+                update_register(path, {"op": "update", "id": items[2]["id"], "rev": stale, "note": "old view"})
+            items = update_register(path, {"op": "alias", "id": items[0]["id"], "rev": items[0]["rev"], "text": "門檻訂多少才算達成"})
+            self.assertEqual(items[0]["aliases"], ["門檻訂多少才算達成"])
+            items = update_register(path, {"op": "remove", "id": items[1]["id"], "rev": items[1]["rev"]})
             self.assertEqual(len(items), 2)
             self.assertEqual(read_register(path), items)
+            self.assertEqual(len({r["id"] for r in items}), len(items))
+            self.assertGreaterEqual(len(items[0]["id"]), 27)  # 64 random bits
+            # a file that exists but can't be read is never overwritten
+            path.write_text('{"items": [')
+            with self.assertRaises(ValueError):
+                update_register(path, {"op": "confirm", "kind": "decision", "text": "x"})
+            self.assertEqual(path.read_text(), '{"items": [')
+            path.unlink()
+            # many long entries: refused before the file outgrows what can be read back
+            from wd import research as R
+            old_max = R.MAX_FILE
+            R.MAX_FILE = 4000
+            try:
+                with self.assertRaises(ValueError):
+                    for k in range(40):
+                        update_register(path, {"op": "confirm", "kind": "decision", "text": f"項目 {k} " + "長" * 250})
+                self.assertTrue(read_register(path))  # what was saved still reads back
+            finally:
+                R.MAX_FILE = old_max
             path.write_text('{"items": [{"id": "../../x", "kind": "decision", "status": "confirmed", "text": "t"}, 5]}')
             self.assertEqual(read_register(path), [])  # malformed entries are dropped, not trusted
 
@@ -1107,6 +1131,9 @@ class ConfirmedItemsTest(unittest.TestCase):
         self.assertTrue(same_item("評估標準要怎麼定？", "評估標準怎麼定"))
         self.assertFalse(same_item("要不要追加預算", "要不要向合作方索取設定檔"))
         self.assertFalse(same_item("定案", "定案了嗎"))  # too short to match loosely
+        self.assertFalse(same_item("是否採用方案 A", "是否採用方案 B"))  # letters must agree
+        self.assertFalse(same_item("預算 1.2 萬元", "預算 12 萬元"))  # numbers must agree
+        self.assertFalse(same_item("要不要採用新流程", "要採用新流程"))  # negation must agree
         with tempfile.TemporaryDirectory() as d:
             reg = Path(d) / "registry"
             reg.mkdir()
@@ -1124,7 +1151,7 @@ class ConfirmedItemsTest(unittest.TestCase):
             data = proj.data()
             self.assertNotEqual(data["fp"], fp)  # the register is part of the fingerprint
             dec, st = data["report"]["decisions"], data["report"]["settled"]
-            self.assertEqual(dec[0]["reg"]["status"], "confirmed")
+            self.assertEqual((dec[0]["reg"]["status"], dec[0]["reg"]["match"]), ("confirmed", "exact"))
             self.assertNotIn("reg", dec[1])
             self.assertEqual(st[0]["reg"]["status"], "dismissed")
             self.assertEqual(len(data["register"]), 2)
@@ -1168,9 +1195,19 @@ class ConfirmedItemsTest(unittest.TestCase):
             finally:
                 os.environ.pop("WD_CLAUDE") if old is None else os.environ.__setitem__("WD_CLAUDE", old)
             rep = json.loads(path.with_name(path.stem + ".report.json").read_text())
-            self.assertEqual([x["decision"] for x in rep["decisions"]], ["要不要追加預算"])  # the confirmed one isn't generated again
-            self.assertEqual(rep["settled"], [])  # the dismissed one doesn't come back
+            # items worded like checked ones go after the visible slots, and the page folds them away
+            self.assertEqual([x["decision"] for x in rep["decisions"]], ["要不要追加預算", "門檻要訂多少？"])
             self.assertEqual(len(json.loads((ov / "demo.decisions.json").read_text())["items"]), 2)  # the run never writes the register
+            from wd.research import ResearchProject, update_register as upd
+            data = ResearchProject(ResearchSource("demo", reg), Path(d) / "data").data()
+            visible = lambda sec, key: [x[key] for x in data["report"][sec] if (x.get("reg") or {}).get("match") != "exact"]  # noqa: E731
+            self.assertEqual(visible("decisions", "decision"), ["要不要追加預算"])
+            self.assertEqual(visible("settled", "item"), [])
+            # undoing the dismissal brings the generated item back without a rerun
+            gone = next(r for r in data["register"] if r["status"] == "dismissed")
+            upd(ov / "demo.decisions.json", {"op": "remove", "id": gone["id"], "rev": gone["rev"]})
+            data = ResearchProject(ResearchSource("demo", reg), Path(d) / "data").data()
+            self.assertEqual(visible("settled", "item"), ["編出來的定案"])
 
     def test_write_endpoint_accepts_only_board_pages(self):
         import http.client
@@ -1183,7 +1220,7 @@ class ConfirmedItemsTest(unittest.TestCase):
             reg = Path(d) / "registry"
             reg.mkdir()
             proj = ResearchProject(ResearchSource("demo", reg), Path(d) / "data")
-            cfg = SimpleNamespace(hub=SimpleNamespace(port=8740, peers=["http://127.0.0.1:8741"]), realms={})
+            cfg = SimpleNamespace(hub=SimpleNamespace(port=8740, peers=["http://127.0.0.1:8741", "garbage", "http://x:bad", "http://localhost"]), realms={})
             board = SimpleNamespace(research={"demo": proj}, cfg=cfg, _recompute=lambda: None)
             httpd = BoundedHTTPServer(("127.0.0.1", 0), make_handler(board))
             port = httpd.server_address[1]
@@ -1209,12 +1246,26 @@ class ConfirmedItemsTest(unittest.TestCase):
                 self.assertEqual(req("POST", {"op": "nope"}, ok)[0], 400)
                 self.assertEqual(req("POST", body, ok, path="/api/research/decisions?name=other")[0], 404)
                 self.assertEqual(req("OPTIONS", None, {"Origin": "http://127.0.0.1:3100"})[0], 403)
+                self.assertEqual(req("OPTIONS", None, {"Origin": "http://127.0.0.1"})[0], 204)  # a peer on port 80, written without a port
+                self.assertEqual(req("OPTIONS", None, {"Origin": "null"})[0], 403)
                 pre = req("OPTIONS", None, {"Origin": "http://localhost:8741", "Access-Control-Request-Method": "POST"})
                 self.assertEqual(pre[:2], (204, "http://localhost:8741"))
                 status, allow, raw = req("POST", body, {**ok, "Origin": f"http://localhost:{port}"})  # the hub's own page
                 self.assertEqual((status, allow), (200, f"http://localhost:{port}"))
                 self.assertEqual(json.loads(raw)["items"][0]["text"], "門檻要訂多少")
                 self.assertEqual(proj.data()["register"][0]["text"], "門檻要訂多少")
+                entry = proj.data()["register"][0]
+                self.assertEqual(req("POST", {"op": "update", "id": entry["id"], "rev": entry["rev"] + 5, "note": "x"}, ok)[0], 409)
+                c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)  # a body shorter than its Content-Length
+                c.putrequest("POST", "/api/research/decisions?name=demo")
+                for k, v in {**ok, "Host": f"127.0.0.1:{port}", "Content-Length": "500"}.items():
+                    c.putheader(k, v)
+                c.endheaders()
+                c.send(json.dumps(body).encode())
+                c.sock.shutdown(__import__("socket").SHUT_WR)
+                self.assertEqual(c.getresponse().status, 400)
+                c.close()
+                self.assertEqual(len(proj.data()["register"]), 1)
             finally:
                 httpd.shutdown()
                 httpd.server_close()

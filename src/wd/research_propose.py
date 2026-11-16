@@ -735,11 +735,15 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
                     return {"id": rid, "quote": _flat(quote, 200)}
                 return None
 
-            # a person's word wins: items already confirmed or dismissed are not generated again
-            for sec, key in (("decisions", "decision"), ("settled", "item")):
+            # a person's word wins: an item worded exactly like one already checked
+            # doesn't take one of the visible slots; it is kept after them (the page
+            # folds it away), so undoing a check brings it back
+            for sec, key, cap in (("decisions", "decision", 4), ("settled", "item", 6)):
                 if isinstance(md.get(sec), list):
-                    md[sec] = [x for x in md[sec] if isinstance(x, dict) and not match_register(str(x.get(key) or ""), register)]
-            for x in [x for x in md.get("decisions", []) if isinstance(x, dict)][:4]:
+                    xs = [x for x in md[sec] if isinstance(x, dict)]
+                    seen = [x for x in xs if match_register(str(x.get(key) or ""), register)[1] == "exact"]
+                    md[sec] = [x for x in xs if x not in seen][:cap] + seen[:4]
+            for x in [x for x in md.get("decisions", []) if isinstance(x, dict)][:8]:
                 fids, cites, _ = from_findings(x.get("findings", []) if isinstance(x.get("findings"), list) else [])
                 ev = evidence(x)
                 warn = ([] if fids else ["沒有對應的結論"]) + ([] if ev else [f"找不到{word}原文證明這件事還沒定，上會前請先核對"]) \
@@ -748,7 +752,7 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
                                             "findings": fids, "cites": cites + ([ev["id"]] if ev and ev["id"] not in cites else []),
                                             **({"evidence": ev} if ev else {}), "warnings": warn})
             report["settled"] = []
-            for x in [x for x in md.get("settled", []) if isinstance(x, dict)][:6]:
+            for x in [x for x in md.get("settled", []) if isinstance(x, dict)][:10]:
                 fids, cites, _ = from_findings(x.get("findings", []) if isinstance(x.get("findings"), list) else [])
                 ev = evidence(x)
                 report["settled"].append({"item": _flat(x.get("item"), 120), "decided": _flat(x.get("decided"), 240), "findings": fids,
