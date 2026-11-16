@@ -358,8 +358,9 @@ def clean_report(rep) -> dict | None:
     out["learned"] = _items(rep.get("learned"), ("headline", "basis", "so_what", "confidence"), 8)
     out["routes"] = _items(rep.get("routes"), ("question", "label", "plain", "status", "stuck"), 12)
     out["unknowns"] = _items(rep.get("unknowns"), ("item", "change_if"), 6)
-    out["decisions"] = _items(rep.get("decisions"), ("decision", "options", "recommendation", "basis", "who", "by_when"), 8)
-    out["settled"] = _items(rep.get("settled"), ("item", "decided", "basis"), 8)
+    # room for the visible items plus the ones kept for checked entries (see research_propose)
+    out["decisions"] = _items(rep.get("decisions"), ("decision", "options", "recommendation", "basis", "who", "by_when"), 12)
+    out["settled"] = _items(rep.get("settled"), ("item", "decided", "basis"), 14)
     out["next_weeks"] = _items(rep.get("next_weeks"), ("task", "learn"), 8)
     out["glossary"] = _items(rep.get("glossary"), ("term", "plain"), 16)
     out["reviews"] = _items(rep.get("reviews"), ("at", "by", "note"), 10, 1000)
@@ -381,12 +382,19 @@ MAX_REG = 300
 MAX_ALIASES = 20
 MAX_HISTORY = 5
 _PUNCT_RE = re.compile(r"[\W_]+", re.UNICODE)
-_TOKENS = re.compile(r"[A-Za-z]+|\d+(?:\.\d+)?")
+# what must agree for two wordings to be "close": words in Latin letters, and
+# figures with their sign, separators and unit marks (+5% vs -5%, 1/23 vs 12/3)
+_TOKENS = re.compile(r"[A-Za-z]+|[+\-−]?\d+(?:[./:]\d+)*%?|[<>≤≥≠=]")
 _NEG = re.compile(r"[不沒未無非別勿]")
 
 
 class RegisterConflict(ValueError):
-    """The entry changed since the page read it (another tab, another person)."""
+    """The entry changed since the page read it (another tab, another person).
+    ``current`` is the entry as it is now, so the page can show what changed."""
+
+    def __init__(self, msg: str, current: dict | None = None):
+        super().__init__(msg)
+        self.current = current
 
 
 def register_path(overlay_path: Path) -> Path:
@@ -426,8 +434,9 @@ def _load_register(path: Path, strict: bool) -> list[dict]:
     except FileNotFoundError:
         return []
     except (ValueError, OSError) as e:
-        if strict:
-            raise ValueError(f"確認清單讀不了，為了不覆蓋，這次沒有寫入（{e}）") from None
+        if strict:  # no paths or OS details in the message: it is sent to the page
+            why = "格式不對" if isinstance(e, ValueError) else "檔案讀不了"
+            raise ValueError(f"確認清單{why}，為了不覆蓋，這次沒有寫入") from None
         return []
     return [y for y in map(_reg_item, items) if y][:MAX_REG]
 
@@ -437,24 +446,29 @@ def read_register(path: Path) -> list[dict]:
 
 
 def _norm_text(t: str) -> str:
-    """Wording without spacing or punctuation, except a decimal point (1.2 is not 12)."""
+    """Wording without spacing or punctuation, except a decimal point (1.2 is not 12);
+    only for measuring overlap, never for deciding two items are the same."""
     return _PUNCT_RE.sub("", re.sub(r"(?<=\d)\.(?=\d)", "點", t or "")).lower()
+
+
+def _same_words(t: str) -> str:
+    """The wording itself: spacing and a trailing question mark or full stop
+    don't count, every other character does (+5% is not -5%, > is not <)."""
+    return re.sub(r"\s+", "", t or "").rstrip("。．.？?！!；;，,").lower()
 
 
 def same_item(a: str, b: str) -> bool:
     """Do two wordings look like the same item? Only a hint: runs reword items,
     so exact text can't be required, but "方案 A" vs "方案 B" or "1.2 萬" vs
     "12 萬" must not match, so letters, numbers and negation have to agree."""
-    A, B = _norm_text(a), _norm_text(b)
-    if not A or not B:
-        return False
-    if A == B:
+    if _same_words(a) and _same_words(a) == _same_words(b):
         return True
-    if min(len(A), len(B)) < 4:
-        return False
     if sorted(_TOKENS.findall((a or "").lower())) != sorted(_TOKENS.findall((b or "").lower())):
         return False
     if bool(_NEG.search(a or "")) != bool(_NEG.search(b or "")):
+        return False
+    A, B = _norm_text(a), _norm_text(b)
+    if not A or not B or min(len(A), len(B)) < 4:
         return False
     sa, sb = set(A), set(B)
     return len(sa & sb) / len(sa | sb) >= 0.6
@@ -465,10 +479,10 @@ def match_register(text: str, items: list[dict]) -> tuple[dict | None, str]:
     "exact" -- the same wording as one the person saw (their own text, the
     generated text they acted on, or a wording they said is the same item);
     "close" -- a likely rewording, shown as a hint for the person to decide."""
-    norm = _norm_text(text)
-    if norm:
+    words = _same_words(text)
+    if words:
         for r in items:
-            if norm in {_norm_text(t) for t in (r["from_text"], r["text"], *r["aliases"]) if t}:
+            if words in {_same_words(t) for t in (r["from_text"], r["text"], *r["aliases"]) if t}:
                 return r, "exact"
     for r in items:
         if any(same_item(text, t) for t in (r["from_text"], r["text"], *r["aliases"]) if t):
@@ -507,6 +521,9 @@ def update_register(path: Path, req: dict) -> list[dict]:
             if op == "dismiss" and not fields.get("from_text"):
                 raise ValueError("from_text required")
             same = next((r for r in items if fields.get("from_text") and r["from_text"] == fields["from_text"]), None)
+            if same and req.get("rev") != same["rev"]:
+                # someone else already checked this generated item; don't overwrite them unseen
+                raise RegisterConflict("這一項剛被別的地方確認或排除過", same)
             if same:
                 entry = same
                 entry["history"] = [*entry["history"], snapshot(entry)][-MAX_HISTORY:]
@@ -531,7 +548,7 @@ def update_register(path: Path, req: dict) -> list[dict]:
             if not entry:
                 raise ValueError("no such entry")
             if "rev" in req and req["rev"] != entry["rev"]:
-                raise RegisterConflict("這筆剛被別的地方改過")
+                raise RegisterConflict("這筆剛被別的地方改過", entry)
             if op == "remove":
                 items.remove(entry)
             elif op == "alias":

@@ -739,10 +739,9 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
             # doesn't take one of the visible slots; it is kept after them (the page
             # folds it away), so undoing a check brings it back
             for sec, key, cap in (("decisions", "decision", 4), ("settled", "item", 6)):
-                if isinstance(md.get(sec), list):
-                    xs = [x for x in md[sec] if isinstance(x, dict)]
-                    seen = [x for x in xs if match_register(str(x.get(key) or ""), register)[1] == "exact"]
-                    md[sec] = [x for x in xs if x not in seen][:cap] + seen[:4]
+                xs = [x for x in md.get(sec) or [] if isinstance(x, dict)]
+                seen = [x for x in xs if match_register(str(x.get(key) or ""), register)[1] == "exact"]
+                md[sec] = [x for x in xs if x not in seen][:cap] + seen[:4]
             for x in [x for x in md.get("decisions", []) if isinstance(x, dict)][:8]:
                 fids, cites, _ = from_findings(x.get("findings", []) if isinstance(x.get("findings"), list) else [])
                 ev = evidence(x)
@@ -760,6 +759,18 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
                                           **({"evidence": ev} if ev else {}),
                                           "warnings": [f"找不到{word}原文證明已經定了"] if not ev
                                           else ["引句寫的是還沒定，請核對是不是真的定了"] if OPEN_WORDS.search(ev["quote"]) else []})
+            # checked items the model rightly left out stay available from the last report,
+            # so undoing a check later shows the generated item again
+            rp_prev = out_path.with_name(out_path.stem + ".report.json")
+            try:
+                prev_rep = json.loads(rp_prev.read_text(encoding="utf-8"))
+            except (FileNotFoundError, ValueError):
+                prev_rep = {}
+            for sec, key in (("decisions", "decision"), ("settled", "item")):
+                have = {str(x.get(key) or "") for x in report[sec]}
+                kept = [x for x in (prev_rep.get(sec) or []) if isinstance(x, dict) and str(x.get(key) or "") not in have
+                        and match_register(str(x.get(key) or ""), register)[1] == "exact"]
+                report[sec] += kept[:max(0, 4 - sum(1 for x in report[sec] if match_register(str(x.get(key) or ""), register)[1] == "exact"))]
             report["next_weeks"] = [{k: _flat(x.get(k), 200) for k in ("task", "learn")} for x in md.get("next_weeks", []) if isinstance(x, dict)][:5]
             report["glossary"] = [{k: _flat(x.get(k), 160) for k in ("term", "plain")} for x in md.get("glossary", []) if isinstance(x, dict)][:10]
             report["cutoff"] = max((recs[i]["ts"] for i in ids), default="")[:10]

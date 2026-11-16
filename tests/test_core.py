@@ -1083,8 +1083,12 @@ class ConfirmedItemsTest(unittest.TestCase):
             a = items[0]
             self.assertEqual((a["status"], a["source"], a["cites"]), ("confirmed", "report", ["REG-20260101-aaaa"]))
             self.assertEqual(oct(path.stat().st_mode & 0o777), "0o600")
-            # confirming the same generated item again updates it instead of adding a second entry
-            items = update_register(path, {"op": "confirm", "kind": "settled", "text": "門檻 66%", "from_text": "AI 寫的門檻"})
+            # another tab confirming the same generated item, unaware of the first: refused, with what is there now
+            with self.assertRaises(RegisterConflict) as cm:
+                update_register(path, {"op": "confirm", "kind": "settled", "text": "門檻 66%", "from_text": "AI 寫的門檻"})
+            self.assertEqual(cm.exception.current["text"], "門檻定多少")
+            # knowingly (with the current rev) it updates the entry instead of adding a second one
+            items = update_register(path, {"op": "confirm", "kind": "settled", "text": "門檻 66%", "from_text": "AI 寫的門檻", "rev": a["rev"]})
             self.assertEqual((len(items), items[0]["kind"], len(items[0]["history"])), (1, "settled", 1))
             items = update_register(path, {"op": "dismiss", "from_text": "編出來的待決"})
             self.assertEqual(items[1]["status"], "dismissed")
@@ -1108,9 +1112,10 @@ class ConfirmedItemsTest(unittest.TestCase):
             self.assertGreaterEqual(len(items[0]["id"]), 27)  # 64 random bits
             # a file that exists but can't be read is never overwritten
             path.write_text('{"items": [')
-            with self.assertRaises(ValueError):
+            with self.assertRaises(ValueError) as cm:
                 update_register(path, {"op": "confirm", "kind": "decision", "text": "x"})
             self.assertEqual(path.read_text(), '{"items": [')
+            self.assertNotIn(d, str(cm.exception))  # no file paths in what the page is told
             path.unlink()
             # many long entries: refused before the file outgrows what can be read back
             from wd import research as R
@@ -1134,6 +1139,12 @@ class ConfirmedItemsTest(unittest.TestCase):
         self.assertFalse(same_item("是否採用方案 A", "是否採用方案 B"))  # letters must agree
         self.assertFalse(same_item("預算 1.2 萬元", "預算 12 萬元"))  # numbers must agree
         self.assertFalse(same_item("要不要採用新流程", "要採用新流程"))  # negation must agree
+        for x, y in (("調整 +5%", "調整 -5%"), ("門檻 > 5", "門檻 < 5"), ("截止 1/23", "截止 12/3")):
+            self.assertFalse(same_item(x, y), (x, y))  # signs, comparisons and separators count
+        from wd.research import match_register
+        entry = {"from_text": "調整 +5%", "text": "", "aliases": []}
+        self.assertEqual(match_register("調整 -5%", [entry]), (None, ""))
+        self.assertEqual(match_register("調整 +5% 。", [entry])[1], "exact")  # spacing and a full stop don't
         with tempfile.TemporaryDirectory() as d:
             reg = Path(d) / "registry"
             reg.mkdir()
@@ -1208,6 +1219,17 @@ class ConfirmedItemsTest(unittest.TestCase):
             upd(ov / "demo.decisions.json", {"op": "remove", "id": gone["id"], "rev": gone["rev"]})
             data = ResearchProject(ResearchSource("demo", reg), Path(d) / "data").data()
             self.assertEqual(visible("settled", "item"), ["編出來的定案"])
+            # a later run whose model rightly leaves the confirmed item out still keeps it (from the last report)
+            again = {k: v for k, v in answers.items()}
+            key = next(k for k in again if k.startswith("已確認的待決定"))
+            again[key] = {**again[key], "decisions": [again[key]["decisions"][1]], "settled": []}
+            os.environ["WD_CLAUDE"] = _fake_claude(d, again)
+            try:
+                propose(ResearchSource("demo", reg), Path(d) / "data", Path(d), log=lambda *a: None, stages="report")
+            finally:
+                os.environ.pop("WD_CLAUDE") if old is None else os.environ.__setitem__("WD_CLAUDE", old)
+            rep2 = json.loads(path.with_name(path.stem + ".report.json").read_text())
+            self.assertEqual([x["decision"] for x in rep2["decisions"]], ["要不要追加預算", "門檻要訂多少？"])
 
     def test_write_endpoint_accepts_only_board_pages(self):
         import http.client

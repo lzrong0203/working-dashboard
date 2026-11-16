@@ -503,13 +503,13 @@ function meeting(rep, d, D) {
   // generated items worded exactly like a checked one are folded away; a close rewording stays, with a hint
   const fresh = (sec) => (rep[sec] || []).map((x, i) => ({ x, i })).filter(({ x }) => x.reg?.match !== "exact");
   const projKey = cur.key || "";
-  const itemKey = (sec, x) => `ai:${sec}:${sec === "decisions" ? x.decision : x.item}`;
+  const itemKey = (sec, x, i) => `ai:${sec}:${i}:${sec === "decisions" ? x.decision : x.item}`;
   const mdCell = (t) => String(t ?? "").replace(/\|/g, "\\|").replace(/\s*\n\s*/g, " ");
   const hint = (x, sec, i) => (x.reg?.match === "close" ? `<br><span class="reghint">看起來跟${x.reg.status === "dismissed" ? "已排除" : "已確認"}的「${esc(x.reg.text)}」是同一件 <button type="button" data-reg="alias" data-id="${esc(x.reg.id)}" data-sec="${sec}" data-i="${i}">是同一件，收起來</button></span>` : "");
   const when = (r) => (r.at ? day(r.at) : "");
   const regMark = (r) => `<span class="regok">✓ 人已確認 ${esc(when(r))}</span>`;
   const warnHtml = (x) => ((x.warnings || []).length ? `<br><span class="fwarn">⚠ ${x.warnings.map(esc).join("；")}</span>` : "");
-  const regBtns = (r) => `<span class="regbar"><button type="button" data-reg="edit" data-id="${esc(r.id)}">修改</button><button type="button" data-reg="remove" data-id="${esc(r.id)}">${ui.regArmed === r.id ? "再按一次取消確認" : "取消確認"}</button></span>`;
+  const regBtns = (r) => `<span class="regbar"><button type="button" data-reg="edit" data-id="${esc(r.id)}">修改</button><button type="button" data-reg="remove" data-id="${esc(r.id)}">${ui.regArmed === armKey(cur.key, r) ? "再按一次取消確認" : "取消確認"}</button></span>`;
   const aiBtns = (sec, i) => `<span class="regbar"><button type="button" data-reg="confirm" data-sec="${sec}" data-i="${i}">✓ 確認</button>${sec === "decisions"
     ? `<button type="button" data-reg="settle" data-sec="${sec}" data-i="${i}">其實已經定了</button>`
     : `<button type="button" data-reg="reopen" data-sec="${sec}" data-i="${i}">其實還沒定</button>`}<button type="button" data-reg="dismiss" data-sec="${sec}" data-i="${i}">✗ 不對</button></span>`;
@@ -525,7 +525,7 @@ function meeting(rep, d, D) {
     const ok = regBy("decision", "confirmed"), ai = fresh("decisions");
     const rowOk = (r) => { const fns = sup(r.cites); return editing(r.id) ? `<tr class="regrow"><td colspan="5">${regForm()}</td></tr>`
       : `<tr class="regdone"><td>${esc(r.text)} ${regMark(r)}${fns}${evid(r)}${r.note ? `<br><span class="muted">${esc(r.note)}</span>` : ""}<br>${regBtns(r)}</td><td colspan="2">${esc(r.detail)}</td><td>${esc(r.who)}</td><td>${esc(r.by_when)}</td></tr>`; };
-    const rowAi = ({ x, i }) => { const fns = sup(x.cites); return editing(itemKey("decisions", x)) ? `<tr class="regrow"><td colspan="5">${regForm()}</td></tr>`
+    const rowAi = ({ x, i }) => { const fns = sup(x.cites); return editing(itemKey("decisions", x, i)) ? `<tr class="regrow"><td colspan="5">${regForm()}</td></tr>`
       : `<tr class="regtodo"><td>${esc(x.decision)}${fns}${evid(x)}${warnHtml(x)}${hint(x, "decisions", i)}<br>${aiBtns("decisions", i)}</td><td>${esc(x.options)}</td><td>${esc(x.recommendation)}${x.basis ? `<br><span class="muted">依據：${esc(x.basis)}</span>` : ""}</td><td>${esc(x.who)}</td><td>${esc(x.by_when)}</td></tr>`; };
     const tally = [ok.length ? `人已確認 ${ok.length} 項` : "", ai.length ? `AI 草稿 ${ai.length} 項待核對` : ""].filter(Boolean).join("・");
     html.push(`<section><h3>5　需要決定的事</h3>${ok.length || ai.length
@@ -542,7 +542,7 @@ function meeting(rep, d, D) {
     const ok = regBy("settled", "confirmed"), ai = fresh("settled");
     const liOk = (r) => { const fns = sup(r.cites); return editing(r.id) ? `<li class="regrow">${regForm()}</li>`
       : `<li class="regdone"><b>${esc(r.text)}</b>：${esc(r.detail)} ${regMark(r)}${fns}${evid(r)}${r.note ? `<br><span class="muted">${esc(r.note)}</span>` : ""}<br>${regBtns(r)}</li>`; };
-    const liAi = ({ x, i }) => { const fns = sup(x.cites); return editing(itemKey("settled", x)) ? `<li class="regrow">${regForm()}</li>`
+    const liAi = ({ x, i }) => { const fns = sup(x.cites); return editing(itemKey("settled", x, i)) ? `<li class="regrow">${regForm()}</li>`
       : `<li class="regtodo"><b>${esc(x.item)}</b>：${esc(x.decided)}${fns}${evid(x)}${x.basis ? `<br><span class="muted">依據：${esc(x.basis)}</span>` : ""}${warnHtml(x)}${hint(x, "settled", i)}<br>${aiBtns("settled", i)}</li>`; };
     html.push(`<section><h3>已經定了、不必上會的</h3>${ok.length || ai.length ? `<ul>${ok.map(liOk).join("")}${ai.map(liAi).join("")}</ul>` : ""}${addBtn("settled")}${dismissed("settled")}</section>`);
     // the item being confirmed left the report (a rerun reworded it): keep the form, and what was typed
@@ -577,6 +577,7 @@ function noUrls(text) {
 function regForm() {
   const f = ui.regForm, v = f.values, settled = v.kind === "settled";
   return `<form class="regform"><fieldset${f.busy ? " disabled" : ""}>
+    ${f.conflict ? `<p class="fwarn">別處目前存的是：「${esc(f.conflict.text || f.conflict.from_text)}」${f.conflict.detail ? `：${esc(f.conflict.detail)}` : ""}（${f.conflict.status === "dismissed" ? "已排除" : "已確認"}）</p>` : ""}
     <label class="rgk">類別<select name="kind"><option value="decision"${settled ? "" : " selected"}>待決定</option><option value="settled"${settled ? " selected" : ""}>已經定了</option></select></label>
     <label>${settled ? "什麼事" : "決定什麼"}<input name="text" maxlength="300" value="${esc(v.text || "")}"></label>
     <label>${settled ? "定了什麼" : "選項與建議"}<textarea name="detail" maxlength="600" rows="2">${esc(v.detail || "")}</textarea></label>
@@ -598,7 +599,14 @@ async function regPost(body, f = null, proj = "") {
     const j = await r.json().catch(() => ({}));
     const c = cache.get(key);
     if (c && (r.ok || r.status === 409)) c.fp = "";  // re-read now rather than at the next state push
-    if (r.status === 409) return fail(`${j.error || "這筆剛被別的地方改過"}，已重新讀取，請再操作一次`);
+    if (r.status === 409) {
+      const now = j.current;
+      if (f && now?.id) {  // keep what was typed; saving again overwrites knowingly, at the current revision
+        Object.assign(f, { op: "update", id: now.id, rev: now.rev, conflict: now });
+        return fail(`${j.error || "這筆剛被別的地方改過"}。再按一次儲存，會改成你填的內容。`);
+      }
+      return fail(`${j.error || "這筆剛被別的地方改過"}，已重新讀取，請再操作一次`);
+    }
     if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
     ui.regError = "";
     return true;
@@ -608,6 +616,9 @@ async function regPost(body, f = null, proj = "") {
     rerender();
   }
 }
+
+// a pressed 取消確認 counts only for that project, entry and revision
+const armKey = (proj, r) => `${proj}|${r.id}|${r.rev}`;
 
 function regClick(b) {
   const a = b.dataset.reg, d = cur.d, rep = d?.report || {}, reg = d?.register || [], proj = cur.key;
@@ -624,7 +635,7 @@ function regClick(b) {
   if (a === "remove") {
     const r = entry(b.dataset.id);
     if (!r) return;
-    if (ui.regArmed !== r.id) { ui.regArmed = r.id; rerender(); return; }
+    if (ui.regArmed !== armKey(proj, r)) { ui.regArmed = armKey(proj, r); rerender(); return; }
     ui.regArmed = ""; regPost({ op: "remove", id: r.id, rev: r.rev }, null, proj); return;
   }
   const sec = b.dataset.sec, x = (rep[sec] || [])[+b.dataset.i];
@@ -637,7 +648,7 @@ function regClick(b) {
   const detail = sec === "decisions"
     ? (a === "settle" ? "" : [x.options, x.recommendation && `建議：${x.recommendation}`].filter(Boolean).join("；"))
     : (a === "reopen" ? "" : x.decided);
-  ui.regForm = { key: `ai:${sec}:${from}`, proj, op: "confirm", extra, values: { kind, text: from, detail, who: x.who || "", by_when: x.by_when || "", note: "" } };
+  ui.regForm = { key: `ai:${sec}:${b.dataset.i}:${from}`, proj, op: "confirm", extra, values: { kind, text: from, detail, who: x.who || "", by_when: x.by_when || "", note: "" } };
   rerender();
 }
 
@@ -718,6 +729,7 @@ function render(el, m) {
   </div>
   ${sessionsFor(p, m)}
   ${d?.reconstructed ? `<p class="hint">這些紀錄是事後從專案文件整理的，不是事先登記：沒有事先定的門檻，判定是整理時讀出的「比對照好、沒改善或看不出來」。每筆都附出處，引句對不上的欄位已被程式拿掉。</p>` : ""}
+  ${ui.regForm && ui.regForm.proj !== keyOf(p) ? `<p class="hint">有一份還沒存的確認${projects.some((x) => keyOf(x) === ui.regForm.proj) ? `在「${esc(projects.find((x) => keyOf(x) === ui.regForm.proj).label)}」` : "（那個專案目前不在清單上）"}：「${esc(ui.regForm.values.text || "")}」 <button type="button" data-reg="cancel">捨棄</button></p>` : ""}
   ${d?.github ? `<p class="hint ghfresh">${d.github.error ? `<span class="fwarn">GitHub 更新失敗${d.github.error_at ? `（${esc(fmtTs(d.github.error_at))}）` : ""}：${esc(d.github.error)}</span> ` : ""}GitHub：${d.github.fetched_at ? `${esc(fmtTs(d.github.fetched_at))} 更新，${d.github.prs} 個 PR` : "還沒抓過（每小時自動更新）"}。${d.reconstructed ? "紀錄不在 repo 裡，只能用名稱和日期找「可能相關」的 PR。" : `依 PR 改到哪份${W}檔來連；內文只是提到編號的不算關係。`}</p>` : ""}
   ${d && !d.questions?.length ? `<p class="hint">目前依代號分組，關係只含記錄裡寫明的 REG 編號。等 AI 讀完內文、補上「問題」和關係之後，這裡會改成依問題分組。</p>` : ""}
   ${d?.errors?.length ? `<details class="hint"><summary>${d.errors.length} 筆讀不進來</summary>${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</details>` : ""}`;
@@ -814,6 +826,7 @@ function wire(el) {
     const rl = t.closest("[data-rlist]");
     if (rl) { ui.reportList = rl.dataset.rlist === "1"; rerender(); return; }
     const mode = t.closest("[data-mode]");
+    if (mode) ui.regArmed = "";
     if (mode) { ui.mode = mode.dataset.mode; lsSet("wd.research.mode", ui.mode); rerender(); return; }
     if (t.closest("#rrcopy")) {
       navigator.clipboard?.writeText(el.querySelector("#rrmd").textContent).then(() => { t.textContent = "已複製"; }, () => { t.textContent = "複製失敗，請手動選取"; });

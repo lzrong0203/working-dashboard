@@ -258,7 +258,7 @@ def make_handler(board: Board):
                     return self._json(400, {"ok": False, "error": "incomplete body"})
                 items = proj.update_register(json.loads(raw))
             except RegisterConflict as e:
-                return self._json(409, {"ok": False, "error": str(e)[:200]})
+                return self._json(409, {"ok": False, "error": str(e)[:200], "current": e.current})
             except (ValueError, TypeError, json.JSONDecodeError) as e:
                 return self._json(400, {"ok": False, "error": str(e)[:200]})
             board._recompute()  # the summary's fingerprint changes; other open pages re-read
