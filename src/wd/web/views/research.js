@@ -107,7 +107,7 @@ function derive(d) {
   const goals = (d.goals || []).map((g) => ({ ...g, qs: (d.questions || []).filter((q) => q.parent === g.id).map((q) => gmap.get(q.id) || { id: q.id, rs: [], q, title: q.title, last: "" }) }));
   const placed = new Set(goals.flatMap((g) => g.qs.map((x) => x.id)));
   const loose = glist.filter((g) => !placed.has(g.id) && g.rs.length);
-  const res = { byId, out, inn, cited, groups: glist, groupOf, byQuestion: qs.size > 0, span, goals, loose };
+  const res = { byId, out, inn, cited, groups: glist, groupOf, byQuestion: qs.size > 0, span, goals, loose, repo: d.github?.repo || "" };
   derivedCache.set(d, res);
   return res;
 }
@@ -151,6 +151,24 @@ function more(text, field, cls = "") {
   return `<dd class="clamp ${cls}"${field ? ` data-field="${esc(field)}"` : ""}><span class="txt">${esc(text)}</span><button class="more" type="button" hidden>更多</button></dd>`;
 }
 
+// Pull requests linked by the files they changed (see research_github.py): the
+// record's own file, a PR the record names, or (reconstructed) a weak name+date match.
+const PR_ROLE = { registered: "登記", updated: "補記", open: "待合併", cited: "內文寫到", mentions: "可能相關" };
+const prUrl = (repo, n) => `https://github.com/${repo.split("/").map(encodeURIComponent).join("/")}/pull/${encodeURIComponent(n)}`;
+function prChip(x, D) {
+  const label = `${PR_ROLE[x.role] || x.role} #${x.n}${x.bulk ? "（整批）" : ""}`;
+  const tip = [x.title, x.merged ? `合併 ${x.merged}` : x.state === "OPEN" ? "還沒合併" : ""].filter(Boolean).join("・");
+  return `<a class="prc pr-${esc(x.role)}${x.bulk ? " bulk" : ""}" href="${esc(prUrl(D.repo, x.n))}" target="_blank" rel="noopener" title="${esc(tip)}">${esc(label)}</a>`;
+}
+function prRow(r, D) {
+  const xs = r.prs || [];
+  if (!xs.length || !D.repo) return "";
+  const head = xs.slice(0, 3), rest = xs.slice(3);
+  return `<p class="rprs"><span class="muted">GitHub</span>${head.map((x) => prChip(x, D)).join("")}${rest.length ? `<details class="prmore"><summary>另 ${rest.length} 個</summary>${rest.map((x) => prChip(x, D)).join("")}</details>` : ""}</p>`;
+}
+const strongPrs = (r) => (r.prs || []).filter((x) => x.role !== "mentions").slice(0, 3);
+const fmtTs = (ts) => (ts ? `${String(ts).slice(5, 10).replace("-", "/")} ${String(ts).slice(11, 16)}` : "");
+
 function rcard(r, D) {
   const outs = (D.out.get(r.id) || []).filter((e) => e.type !== "mentions");
   const ins = (D.inn.get(r.id) || []).filter((e) => e.type !== "mentions");
@@ -176,6 +194,7 @@ function rcard(r, D) {
       ${result ? `<dt>結果</dt>${more(result, r.result_short ? "" : "result")}` : ""}
     </dl>
     ${r.source ? `<p class="rsrc">出處：${esc(r.source)}${(r.checks || []).length ? `<span class="fwarn">整理時：${r.checks.map(esc).join("；")}</span>` : ""}</p>` : ""}
+    ${prRow(r, D)}
     ${gaugeSvg(r.gauge, r.outcome)}
     ${outs.length || ins.length ? `<div class="rlinks">${outs.map((e) => link(e.to, D, e, "out")).join("")}${ins.map((e) => link(e.from, D, e, "in")).join("")}</div>` : ""}
     ${nCited ? `<p class="cited">被 ${nCited} 筆提到</p>` : ""}
@@ -442,6 +461,9 @@ function meeting(rep, d, D) {
   const supMd = (ids) => { const ns = fn(ids); return ns.length ? ns.map((n) => `[${n}]`).join("") : ""; };
   const op = rep.one_page || {};
   const q = (id) => (d.questions || []).find((x) => x.id === id);
+  // the record's own words behind a decision / settled item (verified by the generator)
+  const evid = (x) => (x.evidence ? `<br><span class="muted">${W}原文：「${esc(x.evidence.quote)}」</span>` : "");
+  const evidMd = (x) => (x.evidence ? `（${W}原文：「${x.evidence.quote}」）` : "");
   const html = [], md = [];
   const stale = rep.fingerprint && d.records_fp && rep.fingerprint !== d.records_fp;
   html.push(`<header class="mhead"><h2>${esc(rep.title || "研究進度")}</h2><p class="muted">資料截止 ${esc(rep.cutoff || "")}・${esc(rep.status === "draft" ? "草稿，研究者確認前不要對外" : rep.status || "")}${stale ? "・之後有新的登記，這份還沒更新" : ""}</p></header>`);
@@ -470,23 +492,23 @@ function meeting(rep, d, D) {
     md.push("## 4　還不知道、可能翻盤的", "", ...rep.unknowns.map((x) => `- **${x.item}**${supMd(x.cites)}：什麼結果會改變結論——${x.change_if}`), "");
   }
   if ((rep.decisions || []).length) {
-    html.push(`<section><h3>5　需要決定的事</h3><table class="mtable"><thead><tr><th>決定什麼</th><th>選項與代價</th><th>建議</th><th>誰</th><th>何時前</th></tr></thead><tbody>${rep.decisions.map((x) => `<tr><td>${esc(x.decision)}${sup(x.cites)}${(x.warnings || []).length ? `<br><span class="fwarn">⚠ ${x.warnings.map(esc).join("；")}</span>` : ""}</td><td>${esc(x.options)}</td><td>${esc(x.recommendation)}${x.basis ? `<br><span class="muted">依據：${esc(x.basis)}</span>` : ""}</td><td>${esc(x.who)}</td><td>${esc(x.by_when)}</td></tr>`).join("")}</tbody></table></section>`);
-    md.push("## 5　需要決定的事", "", "| 決定什麼 | 選項與代價 | 建議 | 誰 | 何時前 |", "|---|---|---|---|---|", ...rep.decisions.map((x) => `| ${x.decision} | ${x.options} | ${x.recommendation}${x.basis ? `（依據：${x.basis}）` : ""} | ${x.who} | ${x.by_when} |`), "");
+    html.push(`<section><h3>5　需要決定的事</h3><table class="mtable"><thead><tr><th>決定什麼</th><th>選項與代價</th><th>建議</th><th>誰</th><th>何時前</th></tr></thead><tbody>${rep.decisions.map((x) => `<tr><td>${esc(x.decision)}${sup(x.cites)}${evid(x)}${(x.warnings || []).length ? `<br><span class="fwarn">⚠ ${x.warnings.map(esc).join("；")}</span>` : ""}</td><td>${esc(x.options)}</td><td>${esc(x.recommendation)}${x.basis ? `<br><span class="muted">依據：${esc(x.basis)}</span>` : ""}</td><td>${esc(x.who)}</td><td>${esc(x.by_when)}</td></tr>`).join("")}</tbody></table></section>`);
+    md.push("## 5　需要決定的事", "", "| 決定什麼 | 選項與代價 | 建議 | 誰 | 何時前 |", "|---|---|---|---|---|", ...rep.decisions.map((x) => `| ${x.decision}${evidMd(x)} | ${x.options} | ${x.recommendation}${x.basis ? `（依據：${x.basis}）` : ""} | ${x.who} | ${x.by_when} |`), "");
   }
   // questions that look open but were already settled (pre-registered rules, earlier re-adjudications)
   if ((rep.settled || []).length) {
-    html.push(`<section><h3>已經定了、不必上會的</h3><ul>${rep.settled.map((x) => `<li><b>${esc(x.item)}</b>：${esc(x.decided)}${sup(x.cites)}${x.basis ? `<br><span class="muted">依據：${esc(x.basis)}</span>` : ""}</li>`).join("")}</ul></section>`);
-    md.push("## 已經定了、不必上會的", "", ...rep.settled.map((x) => `- **${x.item}**：${x.decided}${x.basis ? `（依據：${x.basis}）` : ""}`), "");
+    html.push(`<section><h3>已經定了、不必上會的</h3><ul>${rep.settled.map((x) => `<li><b>${esc(x.item)}</b>：${esc(x.decided)}${sup(x.cites)}${evid(x)}${x.basis ? `<br><span class="muted">依據：${esc(x.basis)}</span>` : ""}${(x.warnings || []).length ? `<br><span class="fwarn">⚠ ${x.warnings.map(esc).join("；")}</span>` : ""}</li>`).join("")}</ul></section>`);
+    md.push("## 已經定了、不必上會的", "", ...rep.settled.map((x) => `- **${x.item}**：${x.decided}${evidMd(x)}${x.basis ? `（依據：${x.basis}）` : ""}`), "");
   }
   if ((rep.next_weeks || []).length) {
     html.push(`<section><h3>6　接下來四週</h3><ul>${rep.next_weeks.map((x) => `<li><b>${esc(x.task)}</b>：做完會知道 ${esc(x.learn)}</li>`).join("")}</ul></section>`);
     md.push("## 6　接下來四週", "", ...rep.next_weeks.map((x) => `- **${x.task}**：做完會知道 ${x.learn}`), "");
   }
   const appendix = notes.map((id, k) => { const r = D.byId.get(id); return { n: k + 1, r }; });
-  html.push(`<section class="appendix"><h3>附錄 A　出處</h3><table class="mtable"><thead><tr><th>註</th><th>日期</th><th>在問什麼</th><th>${W === "紀錄" ? "判定" : "登記判定"}</th><th>證據層級</th><th>${W}編號</th></tr></thead><tbody>${appendix.map(({ n, r }) => `<tr data-rid="${esc(r.id)}"><td>[${n}]</td><td>${esc(r.ts.slice(0, 10))}</td><td>${esc(nameOf(r))}</td><td>${badge(r.outcome)}</td><td>${esc(LEVEL[r.level || 0])}${r.n ? `，${r.n} ${UNIT}` : ""}</td><td class="rid">${esc(r.id)}</td></tr>`).join("")}</tbody></table>
+  html.push(`<section class="appendix"><h3>附錄 A　出處</h3><table class="mtable"><thead><tr><th>註</th><th>日期</th><th>在問什麼</th><th>${W === "紀錄" ? "判定" : "登記判定"}</th><th>證據層級</th><th>${W}編號</th>${D.repo ? "<th>GitHub</th>" : ""}</tr></thead><tbody>${appendix.map(({ n, r }) => `<tr data-rid="${esc(r.id)}"><td>[${n}]</td><td>${esc(r.ts.slice(0, 10))}</td><td>${esc(nameOf(r))}</td><td>${badge(r.outcome)}</td><td>${esc(LEVEL[r.level || 0])}${r.n ? `，${r.n} ${UNIT}` : ""}</td><td class="rid">${esc(r.id)}</td>${D.repo ? `<td>${strongPrs(r).map((x) => `<a class="prc pr-${esc(x.role)}" href="${esc(prUrl(D.repo, x.n))}" target="_blank" rel="noopener" title="${esc(PR_ROLE[x.role] || "")}">#${esc(x.n)}</a>`).join(" ")}</td>` : ""}</tr>`).join("")}</tbody></table>
     ${(rep.glossary || []).length ? `<h3>附錄 B　名詞</h3><dl class="mdl">${rep.glossary.map((x) => `<dt>${esc(x.term)}</dt><dd>${esc(x.plain)}</dd>`).join("")}</dl>` : ""}</section>`);
-  md.push("## 附錄 A　出處", "", `| 註 | 日期 | 在問什麼 | ${W === "紀錄" ? "判定" : "登記判定"} | 證據層級 | ${W}編號 |`, "|---|---|---|---|---|---|",
-    ...appendix.map(({ n, r }) => `| [${n}] | ${r.ts.slice(0, 10)} | ${nameOf(r)} | ${(OUTCOME[r.outcome] || OUTCOME.other)[1]} | ${LEVEL[r.level || 0]}${r.n ? `，${r.n} ${UNIT}` : ""} | ${r.id} |`), "");
+  md.push("## 附錄 A　出處", "", `| 註 | 日期 | 在問什麼 | ${W === "紀錄" ? "判定" : "登記判定"} | 證據層級 | ${W}編號 |${D.repo ? " PR |" : ""}`, `|---|---|---|---|---|---|${D.repo ? "---|" : ""}`,
+    ...appendix.map(({ n, r }) => `| [${n}] | ${r.ts.slice(0, 10)} | ${nameOf(r)} | ${(OUTCOME[r.outcome] || OUTCOME.other)[1]} | ${LEVEL[r.level || 0]}${r.n ? `，${r.n} ${UNIT}` : ""} | ${r.id} |${D.repo ? ` ${strongPrs(r).map((x) => `#${x.n}`).join(" ")} |` : ""}`), "");
   if ((rep.glossary || []).length) md.push("## 附錄 B　名詞", "", ...rep.glossary.map((x) => `- **${x.term}**：${x.plain}`), "");
   return { html: html.join(""), md: md.join("\n") };
 }
@@ -555,6 +577,7 @@ function render(el, m) {
   </div>
   ${sessionsFor(p, m)}
   ${d?.reconstructed ? `<p class="hint">這些紀錄是事後從專案文件整理的，不是事先登記：沒有事先定的門檻，判定是整理時讀出的「比對照好、沒改善或看不出來」。每筆都附出處，引句對不上的欄位已被程式拿掉。</p>` : ""}
+  ${d?.github ? `<p class="hint ghfresh">${d.github.error ? `<span class="fwarn">GitHub 更新失敗${d.github.error_at ? `（${esc(fmtTs(d.github.error_at))}）` : ""}：${esc(d.github.error)}</span> ` : ""}GitHub：${d.github.fetched_at ? `${esc(fmtTs(d.github.fetched_at))} 更新，${d.github.prs} 個 PR` : "還沒抓過（每小時自動更新）"}。${d.reconstructed ? "紀錄不在 repo 裡，只能用名稱和日期找「可能相關」的 PR。" : `依 PR 改到哪份${W}檔來連；內文只是提到編號的不算關係。`}</p>` : ""}
   ${d && !d.questions?.length ? `<p class="hint">目前依代號分組，關係只含記錄裡寫明的 REG 編號。等 AI 讀完內文、補上「問題」和關係之後，這裡會改成依問題分組。</p>` : ""}
   ${d?.errors?.length ? `<details class="hint"><summary>${d.errors.length} 筆讀不進來</summary>${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</details>` : ""}`;
   if (!d) {
@@ -628,6 +651,7 @@ function wire(el) {
   el.addEventListener("click", async (ev) => {
     if (!mine(ev)) return;
     const t = ev.target;
+    if (t.closest("a.prc")) return;  // a GitHub link opens in its own tab; don't also jump to the record
     const rl = t.closest("[data-rlist]");
     if (rl) { ui.reportList = rl.dataset.rlist === "1"; rerender(); return; }
     const mode = t.closest("[data-mode]");

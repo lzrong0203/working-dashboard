@@ -680,3 +680,16 @@ sup .fn { font: inherit; font-size: .68rem; background: none; border: 0; padding
   table.sboard th:nth-child(1) { width: 30%; } table.sboard th:nth-child(2) { width: auto; }
   .mdoc { padding: .9rem; } .three .tl { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* GitHub pull requests on a record card and in the report appendix */
+.rprs { margin: .35rem 0 0; font-size: .72rem; display: flex; flex-wrap: wrap; gap: .3rem; align-items: baseline; }
+.prc { display: inline-block; padding: .05rem .4rem; border-radius: 999px; border: 1px solid var(--line); color: var(--ink);
+  text-decoration: none; font-size: .72rem; white-space: nowrap; }
+.prc:hover { border-color: currentColor; }
+.prc.pr-registered, .prc.pr-updated { background: color-mix(in srgb, #2da44e 10%, transparent); }
+.prc.pr-open { background: color-mix(in srgb, #bf8700 12%, transparent); }
+.prc.pr-mentions, .prc.bulk { border-style: dashed; color: var(--muted); }
+.prmore { display: inline; }
+.prmore summary { display: inline; cursor: pointer; color: var(--muted); list-style: none; }
+.prmore[open] summary { margin-right: .3rem; }
+.ghfresh .fwarn { display: inline; }

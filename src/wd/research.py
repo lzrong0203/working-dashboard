@@ -29,6 +29,11 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from wd.research_github import cache_path as github_cache_path
+from wd.research_github import links as github_links
+from wd.research_github import pr_refs
+from wd.research_github import read_cache as read_github_cache
+
 MAX_FILE = 4 * 1024 * 1024
 MAX_FILES = 5000
 MAX_TOTAL = 256 * 1024 * 1024
@@ -59,6 +64,9 @@ DEFAULT_FIELDS: dict[str, list[str]] = {
     "superseded_by": ["superseded_by"],
     "original": ["original"],
     "noise": ["noise_floor", "noise"],
+    # what the record itself says was decided, and what comes next (read at top level and inside result)
+    "decision": ["adopt", "adopted", "decision", "decided"],
+    "next": ["next_step", "next_step_proposal", "next"],
 }
 
 
@@ -80,6 +88,7 @@ class ResearchSource:
     ladder: list[str] = field(default_factory=lambda: list(DEFAULT_LADDER))
     unit: str = "個材料"  # what a record's n counts
     min_n: int = 8  # below this n a result is "preliminary"
+    repo: str = ""  # "owner/name" on GitHub: its pull requests are linked to the records (read-only)
 
     @property
     def reconstructed(self) -> bool:
@@ -180,6 +189,30 @@ def _checked_gauge(gz: dict | None, out: str) -> dict | None:
     return gz
 
 
+def decision_text(d: dict, src: ResearchSource, n: int = 400) -> str:
+    """What the record itself says was decided or comes next, verbatim: a
+    status with words in it (not a bare pass/fail), adoption, decision, next
+    step. Empty when the record says none of these."""
+    res = _get(d, src.field_names("result"))
+    res = res if isinstance(res, dict) else {}
+    parts: list[str] = []
+    st = _flat(_get(d, src.field_names("status")), 160)
+    if st and not re.fullmatch(r"[a-z_ -]+", st.lower()):
+        parts.append(f"狀態：{st}")
+    for key, label in (("decision", "決定"), ("next", "下一步")):
+        for name in src.field_names(key):
+            for where in (d, res):
+                v = where.get(name)
+                if v not in (None, "", [], {}) and str(v).lower() != "none":
+                    parts.append(f"{label}：{_flat(v, 300)}")
+    q = d.get("quotes")
+    if isinstance(q, dict) and isinstance(q.get("decision"), str) and q["decision"].strip():
+        parts.append(f"原文：{_flat(q['decision'], 300)}")
+    seen: set[str] = set()
+    parts = [x for x in parts if not (x in seen or seen.add(x))]
+    return _flat(" ／ ".join(parts), n) if parts else ""
+
+
 def family_of(code: str) -> str:
     return re.sub(r"(-?\d+[a-z]?)+$", "", code) or code
 
@@ -236,6 +269,7 @@ def normalise(d: dict, src: ResearchSource) -> dict:
         "title": title,
         "code": code,
         "family": family_of(code) if code else "",
+        "line": line,
         "kind": kind,
         "status": status,
         "verdict": verdict,
@@ -251,6 +285,7 @@ def normalise(d: dict, src: ResearchSource) -> dict:
         "gauge": _checked_gauge(gauge(g("criterion"), res, g("noise")), outcome(status, verdict)),
         "edges": edges,
         "mentions": mentions,
+        "pr_refs": pr_refs(whole),
         # reconstructed records: where in the write-up it came from, and what the checks removed
         "source": (f"{_flat(d['source'].get('doc'), 120)} §{_flat(d['source'].get('section'), 120)}"
                    if isinstance(d.get("source"), dict) else ""),
@@ -298,6 +333,9 @@ def _items(xs, keys: tuple[str, ...], n: int = 12, clip: int = 400) -> list[dict
         for k in ("cites", "findings"):
             d[k] = _ids(x.get(k))
         d["warnings"] = [_flat(w, 200) for w in x.get("warnings", []) if isinstance(w, str)][:6] if isinstance(x.get("warnings"), list) else []
+        ev = x.get("evidence")
+        if isinstance(ev, dict) and ev.get("id") and ev.get("quote"):  # the record's own words behind a decision
+            d["evidence"] = {"id": _flat(ev["id"], 40), "quote": _flat(ev["quote"], 300)}
         out.append(d)
     return out[:n]
 
@@ -358,7 +396,8 @@ class ResearchProject:
 
     def fingerprint(self) -> str:
         h = hashlib.sha1()
-        for p in [*self._files(), self.overlay_path, self.overlay_path.with_name(self.overlay_path.stem + ".report.json")]:
+        for p in [*self._files(), self.overlay_path, self.overlay_path.with_name(self.overlay_path.stem + ".report.json"),
+                  github_cache_path(self.overlay_path)]:
             try:
                 st = p.stat()
                 h.update(f"{p.name}:{st.st_mtime_ns}:{st.st_ctime_ns}:{st.st_ino}:{st.st_size};".encode())
@@ -442,6 +481,18 @@ class ResearchProject:
         for r in records:
             r["edges"] = [e for e in r["edges"] if e["from"] in ids and e["to"] in ids]
             r["mentions"] = [m for m in r["mentions"] if m in ids]
+        github = None
+        if self.src.repo:
+            cache = read_github_cache(github_cache_path(self.overlay_path))
+            try:
+                by_id = {r["id"]: r for r in records}
+                for rid, prs in github_links(records, index, cache, weak=self.src.reconstructed).items():
+                    by_id[rid]["prs"] = prs[:12]
+            except Exception as e:  # a bad cache costs the links, not the page
+                errors.append(f"github: {e}")
+            github = {"repo": self.src.repo, "fetched_at": _flat(cache.get("fetched_at"), 40),
+                      "error": _flat(cache.get("error"), 300), "error_at": _flat(cache.get("error_at"), 40),
+                      "prs": len(cache.get("prs") or [])}
         return {
             "name": self.src.name,
             "label": self.src.label or self.src.name,
@@ -455,6 +506,7 @@ class ResearchProject:
             "questions": questions,
             "report": report,
             "edges": edges,
+            "github": github,
             "errors": errors[:50],
         }
 

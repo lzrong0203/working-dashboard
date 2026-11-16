@@ -169,6 +169,9 @@ def _research(raw: list) -> list:
         ladder = [str(x) for x in r.get("ladder", [])] or list(DEFAULT_LADDER)
         if len(ladder) != 5 or not all(x.strip() for x in ladder):
             raise ConfigError(f"[[hub.research]] {name}: ladder needs exactly 5 steps, weakest first")
+        repo = str(r.get("repo") or "")
+        if repo and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9_.-]{1,100}", repo):
+            raise ConfigError(f"[[hub.research]] {name}: repo must look like owner/name, got {repo!r}")
         min_n = r.get("min_n", 8)
         if isinstance(min_n, bool) or not isinstance(min_n, int) or min_n < 1:
             raise ConfigError(f"[[hub.research]] {name}: min_n must be a positive integer")
@@ -176,7 +179,7 @@ def _research(raw: list) -> list:
             name=name, path=expand(r["path"]), label=str(r.get("label") or ""), format=fmt,
             overlay=expand(r["overlay"]) if r.get("overlay") else None, fields=fields,
             forbidden=[str(x) for x in r.get("forbidden", [])],
-            ladder=ladder, unit=str(r.get("unit") or "個材料"), min_n=min_n,
+            ladder=ladder, unit=str(r.get("unit") or "個材料"), min_n=min_n, repo=repo,
         ))
     return out
 

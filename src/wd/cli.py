@@ -137,6 +137,8 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--questions-only", action="store_true")
     rp.add_argument("--synth-model", default="", help="model for the structure/claims/report stages (default: --model)")
     rp.add_argument("--stages", default="all", help="comma list of records,structure,claims,report (default: all)")
+    rg = rs.add_parser("github", parents=[common], help="refresh the pull-request links now (read-only gh on this machine)")
+    rg.add_argument("name", help="[[hub.research]] name with repo = \"owner/name\"")
     rr = rs.add_parser("reconstruct", parents=[common],
                        help="rebuild records from a project's own write-ups (for projects that never pre-registered)")
     rr.add_argument("name", help="[[hub.research]] name (format = \"reconstructed\"; records are written into its path)")
@@ -271,6 +273,11 @@ def dispatch(cfg: cfgmod.Config, args) -> int:
         from wd import research_reconstruct
 
         return research_reconstruct.main(cfg, args.name, args.doc, args.git, args.model, args.profile, args.workers)
+
+    if args.cmd == "research" and args.sub == "github":
+        from wd import research_github
+
+        return research_github.main(cfg, args.name)
 
     if args.cmd == "research" and args.sub == "propose":
         from wd import research_propose

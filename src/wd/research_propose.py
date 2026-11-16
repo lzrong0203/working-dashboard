@@ -13,12 +13,15 @@ reading only what the previous one verified:
 3. claims    -- per route: what holds / fails / is unknown, where it is stuck,
                 next step, decision needed, and 0-3 findings, each citing
                 records with a role (supports / against / limits) and a quote;
-4. report    -- a meeting report built from the findings only.
+4. report    -- a meeting report built from the findings, plus each record's
+                own words on what was decided or comes next, so an item the
+                records already settled isn't presented as an open decision.
 
 Programs, not the model, decide: confidence labels (from cited records'
 evidence level, sample size and verdicts), whether a number in a sentence
 appears in its sources, forbidden words, links pointing forward in time, and
-the "too many open records to conclude" template. Everything AI-written is
+the "too many open records to conclude" template, and that every decision or
+settled item quotes a record that shows it is still open / already decided. Everything AI-written is
 ``by: "ai"``; edges marked ``by: "human"`` survive reruns.
 """
 
@@ -35,7 +38,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from wd.research import CODE, DEFAULT_LADDER, MAX_FILE, ResearchProject, ResearchSource, _flat, _get, addenda
+from wd.research import CODE, DEFAULT_LADDER, MAX_FILE, ResearchProject, ResearchSource, _flat, _get, addenda, decision_text
 
 LINK_TYPES = ("because", "follows", "readjudicates", "supersedes", "corrects", "uses")
 STUCK = ("method", "measure", "external", "not_started", "closed", "none")
@@ -88,6 +91,7 @@ C_SCHEMA = {"type": "object", "properties": {
     }, "required": ["id", "holds", "fails", "unknown", "stuck", "next", "decision", "findings"]}},
 }, "required": ["goal_answer", "questions"]}
 
+S_EVID = {"type": "object", "properties": {"id": {"type": "string"}, "quote": {"type": "string"}}, "required": ["id", "quote"]}
 M_SCHEMA = {"type": "object", "properties": {
     "title": {"type": "string"},
     "one_page": {"type": "object", "properties": {
@@ -106,11 +110,13 @@ M_SCHEMA = {"type": "object", "properties": {
         "required": ["item", "change_if", "findings"]}},
     "decisions": {"type": "array", "items": {"type": "object", "properties": {
         "decision": {"type": "string"}, "options": {"type": "string"}, "recommendation": {"type": "string"},
-        "who": {"type": "string"}, "by_when": {"type": "string"}, "findings": {"type": "array", "items": {"type": "string"}}},
-        "required": ["decision", "options", "recommendation", "who", "by_when", "findings"]}},
+        "who": {"type": "string"}, "by_when": {"type": "string"}, "findings": {"type": "array", "items": {"type": "string"}},
+        "evidence": S_EVID},
+        "required": ["decision", "options", "recommendation", "who", "by_when", "findings", "evidence"]}},
     "settled": {"type": "array", "items": {"type": "object", "properties": {
-        "item": {"type": "string"}, "decided": {"type": "string"}, "findings": {"type": "array", "items": {"type": "string"}}},
-        "required": ["item", "decided", "findings"]}},
+        "item": {"type": "string"}, "decided": {"type": "string"}, "findings": {"type": "array", "items": {"type": "string"}},
+        "evidence": S_EVID},
+        "required": ["item", "decided", "findings", "evidence"]}},
     "next_weeks": {"type": "array", "items": {"type": "object", "properties": {
         "task": {"type": "string"}, "learn": {"type": "string"}}, "required": ["task", "learn"]}},
     "glossary": {"type": "array", "items": {"type": "object", "properties": {
@@ -148,7 +154,7 @@ Q_PROMPT = """下面是一個研究專案全部實驗登記的白話摘要（每
 
 C_PROMPT = """目標：{goal}（怎樣算成功：{bar}）
 
-下面是這個目標底下每條途徑或問題，以及屬於它的登記摘要（編號｜日期｜登記判定｜證據層級｜樣本數（{unit}）｜白話名｜為什麼｜結果）。
+下面是這個目標底下每條途徑或問題，以及屬於它的登記摘要（編號｜日期｜登記判定｜證據層級｜樣本數（{unit}）｜白話名｜為什麼｜結果｜登記原文寫的決定或下一步）。
 {verdict_note}
 
 {blocks}
@@ -156,7 +162,7 @@ C_PROMPT = """目標：{goal}（怎樣算成功：{bar}）
 請對每條途徑或問題回答（只根據上面的摘要）：
 - holds / fails / unknown：目前成立的、不成立的、還不知道的，各 0–3 句，每句 40 字內，cites 列出根據的登記編號。
 - stuck：卡在哪，只能是 method（方法還不可信）、measure（在等量測）、external（在等外部決定或資料）、not_started（還沒開始）、closed（已結案）、none（沒有卡住）。
-- next：下一步（一句），decision：需要研究者或主管決定的事（沒有就給空字串）。
+- next：下一步（一句）；decision：需要研究者或主管決定、而且登記原文還沒定的事（沒有就給空字串）。登記原文已經寫了採用、不採用、凍結、規則或下一步的，算已經定了，不要列成 decision。
 - findings：0–3 條真正學到的事（會改變下一步、或打開或關掉一條路的才寫）。每條：
   statement 一句可被反駁的結論（最多一個主要數字，數字照原文寫，例如「從 47% 提到 66%」；原文本來就用倍數時才寫幾倍；不要自己換算，也不用 dex、R² 這類術語；數字後面說跟什麼比）；
   basis 憑什麼（跟什麼比、幾{unit}）；so_what 所以要怎樣；change_if 什麼結果會推翻它；
@@ -170,7 +176,8 @@ M_PROMPT = """請把下面的研究整理寫成一份 10–15 分鐘的會議報
 - 只能使用下面「結論清單」裡的內容；learned 與 unknowns 一定要列出所根據的結論 id（findings 欄位），不得新增沒有出處的說法。
 - 把握程度不要自己寫，報告產生器會依結論 id 自動帶出。
 - learned 選 3–5 條「會改變下一步、或打開或關掉一條路線」的；routes 列主命題的各條途徑；unknowns 最多 3 條可能翻盤的；
-  decisions 只列結論清單裡「待決」明寫還沒定、而且研究者自己定不了的事，並列出根據的結論 id；登記裡已經寫好下一步、規則或已做過決定的，放進 settled（已經定了、不必上會），不要當成待決；next_weeks 最多 5 項，各寫做完會知道什麼。
+  decisions 只列還沒定、而且研究者自己定不了的事，並列出根據的結論 id；evidence 給一筆登記的編號和能看出「這件事還沒定」的逐字引句（40 字內，例如寫著待決定、尚未定義），找不到就 id 與 quote 都給空字串；
+  下面「登記裡寫的決定與下一步」已經寫了採用、不採用、凍結、規則或下一步的事，放進 settled（已經定了、不必上會），evidence 給那筆的編號和逐字引句（40 字內），不要當成待決；next_weeks 最多 5 項，各寫做完會知道什麼。
 - 要能在會議上講：one_page 的 goal 60 字內、success 80 字內、answer 80 字內、why_hard 80 字內；numbers 正好 3 個，每個一句、列出根據的結論 id；
   learned 的 headline 一句結論（30 字內）、basis 100 字內、so_what 80 字內；unknowns 的 item 40 字內、change_if 80 字內；decisions 每欄 60 字內；next_weeks 每項 50 字內。
 {rules}
@@ -179,6 +186,9 @@ M_PROMPT = """請把下面的研究整理寫成一份 10–15 分鐘的會議報
 
 結論清單（id｜把握｜結論｜憑什麼｜所以｜什麼會推翻它）：
 {findings}
+
+登記裡寫的決定與下一步（登記原文，依途徑分組，新的在前）：
+{decided}
 """
 
 
@@ -220,8 +230,9 @@ def brief(raw: dict, src: ResearchSource) -> str:
         ("種類", g("kind", 60)), ("狀態", g("status", 160)), ("承接", g("parent", 300)), ("為什麼", g("why", 1500)),
         ("假設", g("hypothesis", 1800)), ("判準", g("criterion", 400)), ("輸的條件", g("lose", 600)),
         ("事前預期", g("expected", 500)),
-        ("結果", _flat({k: res[k] for k in ("verdict", "cv", "diagnosis", "next_step_proposal") if k in res}, 1400)
+        ("結果", _flat({k: res[k] for k in ("verdict", "verdict_note", "cv", "diagnosis") if k in res}, 1400)
          if isinstance(res, dict) else _flat(res, 1000)),
+        ("決定與下一步", decision_text(raw, src, 800)),
     ]
     notes = addenda(raw)
     if notes:  # later results and re-adjudications live here; newest last, budgeted
@@ -371,6 +382,35 @@ def strip_codes(text: str) -> str:
     return re.sub(r"\s{2,}", " ", CODE.sub("", text or "")).strip(" ：:，,")
 
 
+def decided_block(overlay: dict, recs: dict, ids: list[str], dtext: dict[str, str], per_q: int = 4, budget: int = 20000) -> str:
+    """The records' own words on decisions and next steps, grouped by question,
+    newest first, identical texts once: what the report stage must not
+    present as still open."""
+    groups: dict[str, list[str]] = {}
+    for i in ids:
+        if dtext.get(i):
+            groups.setdefault(overlay["records"].get(i, {}).get("question", ""), []).append(i)
+    titles = {q["id"]: q["title"] for q in overlay.get("questions", [])}
+    out, used = [], 0
+    for qid in [*titles, ""]:
+        seen, rows = set(), []
+        for i in sorted(groups.get(qid, []), key=lambda i: recs[i]["ts"], reverse=True):
+            key = _norm(dtext[i])
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(f"  {i}｜{recs[i]['ts'][:10]}｜{dtext[i][:220]}")
+            if len(rows) >= per_q:
+                break
+        if rows:
+            block = f"[{qid or '未分類'}] {titles.get(qid, '未分類')}\n" + "\n".join(rows)
+            if used + len(block) > budget:
+                break
+            out.append(block)
+            used += len(block)
+    return "\n".join(out) or "（登記裡沒有寫決定或下一步）"
+
+
 # ---- the pipeline ------------------------------------------------------------------
 class Writer:
     def __init__(self, path: Path):
@@ -419,6 +459,7 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
         except Exception:
             continue
     ids = [i for i in recs if i in raw]
+    dtext = {i: decision_text(raw[i], src) for i in ids}  # the record's own words; never AI-written
     code_to_id: dict[str, str] = {}
     for r in recs.values():
         if r["code"]:
@@ -533,7 +574,8 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
                 for q in qs:
                     mem = [i for i in ids if overlay["records"].get(i, {}).get("question") == q["id"]]
                     lines = [f"  {i}｜{recs[i]['ts'][:10]}｜{recs[i]['outcome']}｜{enriched[i].get('level', 0)}｜{enriched[i].get('n', 0)}｜"
-                             f"{enriched[i].get('name', '')}｜{enriched[i].get('why', '')}｜{enriched[i].get('result', '')}" for i in mem]
+                             f"{enriched[i].get('name', '')}｜{enriched[i].get('why', '')}｜{enriched[i].get('result', '')}｜{dtext[i][:200] or '-'}"
+                             for i in mem]
                     blocks.append(f"[{q['id']}] {q['title']}（{len(mem)} 筆）\n" + ("\n".join(lines) or "  （沒有登記）"))
                 try:
                     cd = call_claude(adapt(C_PROMPT, src).format(goal=g["title"], bar=g.get("bar", ""), blocks="\n\n".join(blocks), unit=src.unit,
@@ -600,7 +642,8 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
                 for q in overlay["questions"] if q.get("parent") == g["id"]) for g in overlay["goals"])
             f_txt = "\n".join(f"{fid}｜{f['confidence']}｜{f['statement']}｜{f['basis']}｜{f['so_what']}｜{f['change_if']}" for fid, (q, f) in fl.items())
             rules = (f"- 不得使用這些詞：{'、'.join(forbidden)}\n" if forbidden else "")
-            md = call_claude(adapt(M_PROMPT, src).format(rules=rules, goals=goals_txt, findings=f_txt), M_SCHEMA, config_dir, synth, timeout=1500)
+            md = call_claude(adapt(M_PROMPT, src).format(rules=rules, goals=goals_txt, findings=f_txt, decided=decided_block(overlay, recs, ids, dtext)),
+                             M_SCHEMA, config_dir, synth, timeout=1500)
             if not isinstance(md, dict) or not md.get("learned"):
                 raise RuntimeError("report stage returned nothing usable; previous report kept")
             weakest_order = conf_ladder(src)
@@ -652,14 +695,30 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
             for x in md.get("unknowns", [])[:3]:
                 fids, cites, _ = from_findings(x.get("findings", []))
                 report["unknowns"].append({"item": _flat(x.get("item"), 200), "change_if": _flat(x.get("change_if"), 200), "cites": cites})
+            word = "紀錄" if src.reconstructed else "登記"
+
+            def evidence(x):  # the record's own words behind an open / settled item, checked here, not trusted
+                ev = x.get("evidence") if isinstance(x.get("evidence"), dict) else {}
+                rid, quote = str(ev.get("id") or ""), _flat(ev.get("quote"), 300)
+                rid = rid if rid in recs else code_to_id.get(rid, "")
+                if rid in raw_text and quote_supported(quote, _norm(raw_text[rid])):
+                    return {"id": rid, "quote": _flat(quote, 200)}
+                return None
+
             for x in [x for x in md.get("decisions", []) if isinstance(x, dict)][:4]:
                 fids, cites, _ = from_findings(x.get("findings", []) if isinstance(x.get("findings"), list) else [])
+                ev = evidence(x)
+                warn = ([] if fids else ["沒有對應的結論"]) + ([] if ev else [f"找不到{word}原文證明這件事還沒定，上會前請先核對"])
                 report["decisions"].append({**{k: _flat(x.get(k), 240) for k in ("decision", "options", "recommendation", "who", "by_when")},
-                                            "findings": fids, "cites": cites, "warnings": [] if fids else ["沒有對應的結論，請先核對是不是真的還沒定"]})
+                                            "findings": fids, "cites": cites + ([ev["id"]] if ev and ev["id"] not in cites else []),
+                                            **({"evidence": ev} if ev else {}), "warnings": warn})
             report["settled"] = []
             for x in [x for x in md.get("settled", []) if isinstance(x, dict)][:6]:
                 fids, cites, _ = from_findings(x.get("findings", []) if isinstance(x.get("findings"), list) else [])
-                report["settled"].append({"item": _flat(x.get("item"), 120), "decided": _flat(x.get("decided"), 240), "findings": fids, "cites": cites})
+                ev = evidence(x)
+                report["settled"].append({"item": _flat(x.get("item"), 120), "decided": _flat(x.get("decided"), 240), "findings": fids,
+                                          "cites": cites + ([ev["id"]] if ev and ev["id"] not in cites else []),
+                                          **({"evidence": ev} if ev else {}), "warnings": [] if ev else [f"找不到{word}原文證明已經定了"]})
             report["next_weeks"] = [{k: _flat(x.get(k), 200) for k in ("task", "learn")} for x in md.get("next_weeks", []) if isinstance(x, dict)][:5]
             report["glossary"] = [{k: _flat(x.get(k), 160) for k in ("term", "plain")} for x in md.get("glossary", []) if isinstance(x, dict)][:10]
             report["cutoff"] = max((recs[i]["ts"] for i in ids), default="")[:10]

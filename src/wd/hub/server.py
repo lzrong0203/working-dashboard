@@ -196,6 +196,10 @@ def make_handler(board: Board):
                     self.end_headers()
                     self.wfile.write(body)
                     return
+                if proj.src.repo:  # hourly, in the background; the page shows the cache it has
+                    from wd.research_github import cache_path, refresh_async
+
+                    refresh_async(proj.src.repo, cache_path(proj.overlay_path))
                 d = proj.data()
                 etag = f'"{d["fp"]}"'
                 if self.headers.get("If-None-Match") == etag:

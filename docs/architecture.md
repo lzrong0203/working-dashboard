@@ -160,6 +160,60 @@ wd research propose deploy --model sonnet --synth-model opus
   It drives the evidence-ladder column and the confidence wording that the
   propose stage computes.
 
+### Decisions in the meeting report
+
+A meeting report must not list an item as "needs a decision" when the records
+already settled it. So the report stage is given each record's own words on
+what was decided or comes next, not just AI summaries: a status with words in it
+(for example "frozen by the user"), `adopt` / `decision` fields, and
+`next_step` fields, read at the top level and inside `result`. Map other names
+with `fields.decision` / `fields.next`.
+
+Every item in "needs a decision" and in "already settled" must quote a record:
+
+- for a decision, a quote showing it is still open;
+- for a settled item, a quote showing it was decided.
+
+The generator checks each quote against the record. An item without a verified
+quote stays in the report with a warning to check it before the meeting.
+Decisions that never reached any record still need a person to add them.
+
+### Pull requests
+
+Projects often keep their process on GitHub. With `repo` set, the hub links each
+record to the pull requests that changed it:
+
+```toml
+[[hub.research]]
+name = "proj"
+path = "~/projects/proj/registry"
+repo = "owner/name"   # private config only
+```
+
+- **Reading only.** The hub machine's own `gh` login lists every PR with the
+  files it changed. It writes `<name>.github.json` beside the overlay, refreshes
+  hourly in the background while the page is open, and keeps the last good list
+  if a refresh fails. `wd research github <name>` refreshes on demand and prints
+  how many records got links. Nothing is written to GitHub.
+- **Links come from changed files, not prose.**
+  - *登記 / 補記*: the PR changed the record's own file (`<dir>/<file>` must
+    match). The first merged PR added it; later ones appended to it.
+  - *待合併*: an open PR changes the record's file.
+  - *內文寫到*: the record itself names the PR ("PR #12", ".../pull/12").
+  - A PR that changes more than five record files is marked 整批.
+  - A PR that merely mentions a record id is not linked, for the same reason
+    mentions aren't edges.
+- **Reconstructed records** don't live in the repo. They only get weak
+  *可能相關* links: the record's line name appears in the PR title or branch,
+  and the PR merged between 3 days before and 14 days after the record.
+- **Where the links show.**
+  - Each record card shows up to three chips; the rest fold away.
+  - The report appendix gets a PR column.
+  - The Markdown export carries PR numbers, never URLs.
+  - Report prose never cites PRs, and PR text never feeds the claims or report
+    stages: agent-written PR descriptions would otherwise "verify" claims
+    against themselves.
+
 ## Security properties
 
 - No HTTP write endpoint exists. The only writes are `ssh <hub> wd rpc`, so

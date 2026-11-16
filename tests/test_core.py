@@ -856,5 +856,149 @@ class CodexRound2Test(unittest.TestCase):
                 pixel.HOME = old
 
 
+class GithubAndDecisionsTest(unittest.TestCase):
+    def _registry(self, d, n=7):
+        reg = Path(d) / "registry"
+        reg.mkdir()
+        ids = [f"REG-2026010{k + 1}-{k:04x}" for k in range(n)]
+        for k, rid in enumerate(ids):
+            body = {"id": rid, "ts": f"2026-01-0{k + 1}", "title": f"try {k}", "status": "pass"}
+            if k == 2:
+                body["why"] = "見 PR #5 的討論；PR #6 沒合併"
+            (reg / f"{rid}.json").write_text(json.dumps(body, ensure_ascii=False))
+        return reg, ids
+
+    def test_links_follow_changed_files_not_prose(self):
+        from wd.research import ResearchProject, ResearchSource
+        with tempfile.TemporaryDirectory() as d:
+            reg, ids = self._registry(d)
+            a, b, c = ids[:3]
+            pr = lambda n, files, state="MERGED", merged="2026-01-10T00:00:00Z", title="t": {  # noqa: E731
+                "n": n, "title": title, "state": state, "merged": merged if state == "MERGED" else "", "branch": "x", "files": files}
+            cache = {"repo": "o/r", "fetched_at": "2026-01-20T10:00:00+0800", "error": "", "prs": [
+                pr(1, [f"registry/{a}.json"], merged="2026-01-01T00:00:00Z"),
+                pr(2, [f"registry/{a}.json", f"notes/rounds/{b}.json"], merged="2026-01-05T00:00:00Z"),  # b's note is not b's record
+                pr(3, [f"registry/{i}.json" for i in ids[1:]], merged="2026-01-07T00:00:00Z"),  # 6 record files: bulk
+                pr(4, [f"registry/{b}.json"], state="OPEN"),
+                pr(5, ["src/x.py"], title=f"mentions {a} in prose"),  # text mention: no link
+                pr(6, ["src/y.py"], state="CLOSED"),
+            ]}
+            data_dir = Path(d) / "data"
+            (data_dir / "research").mkdir(parents=True)
+            (data_dir / "research" / "demo.github.json").write_text(json.dumps(cache))
+            data = ResearchProject(ResearchSource("demo", reg, repo="o/r"), data_dir).data()
+            by = {r["id"]: r for r in data["records"]}
+            self.assertEqual([(x["n"], x["role"]) for x in by[a]["prs"]], [(1, "registered"), (2, "updated")])
+            self.assertEqual([(x["n"], x["role"], x["bulk"]) for x in by[b]["prs"]], [(3, "registered", True), (4, "open", False)])
+            self.assertEqual([(x["n"], x["role"]) for x in by[c]["prs"]], [(3, "registered"), (5, "cited")])  # closed #6 not linked
+            self.assertEqual(data["github"]["prs"], 6)
+            self.assertNotIn("prs", ResearchProject(ResearchSource("demo2", reg), data_dir).data()["records"][0])  # no repo: no links
+
+    def test_weak_mentions_only_for_reconstructed_and_near_in_time(self):
+        from wd.research_github import links
+        recs = [{"id": "REC-1", "line": "T9", "ts": "2026-11-04"}, {"id": "REC-2", "line": "", "ts": "2026-11-04"}]
+        prs = [{"n": n, "title": t, "state": "MERGED", "merged": m, "branch": b, "files": []} for n, t, m, b in [
+            (10, "Round 3 log", "2026-11-05T00:00:00Z", "t9-third-try"), (11, "T90 cleanup", "2026-11-05T00:00:00Z", "x"),
+            (12, "T9 old", "2026-10-01T00:00:00Z", "x"), (13, "T9 next", "2026-11-12T00:00:00Z", "x")]]
+        out = links(recs, {}, {"prs": prs}, weak=True)
+        self.assertEqual([(x["n"], x["role"]) for x in out["REC-1"]], [(10, "mentions"), (13, "mentions")])
+        self.assertNotIn("REC-2", out)
+        self.assertEqual(links(recs, {}, {"prs": prs}, weak=False), {})
+
+    def test_fetch_failure_keeps_last_good_list(self):
+        from wd import research_github as gh
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "x.github.json"
+            path.write_text(json.dumps({"repo": "o/r", "fetched_at": "t0", "prs": [{"n": 1}]}))
+            old = gh.gh_exe
+            gh.gh_exe = lambda: None
+            try:
+                out = gh.fetch("o/r", path)
+            finally:
+                gh.gh_exe = old
+            self.assertIn("gh not found", out["error"])
+            self.assertEqual((out["fetched_at"], out["prs"]), ("t0", [{"n": 1}]))
+            self.assertEqual(json.loads(path.read_text())["prs"], [{"n": 1}])
+        self.assertEqual(gh.pr_refs("見PR #42、PR12 與 https://github.com/o/r/pull/7；#9 不算；PR-AUC 不算"), [7, 12, 42])
+
+    def test_decision_text_is_the_records_own_words(self):
+        from wd.research import ResearchSource, decision_text
+        src = ResearchSource("m", Path("."))
+        rec = {"status": "registered；凍結（使用者 1/09）", "result": {"verdict": "FAIL", "adopt": "NOT-ADOPTED（待使用者決定）",
+                                                                 "next_step_proposal": "先補資料"}}
+        t = decision_text(rec, src)
+        self.assertIn("狀態：registered；凍結（使用者 1/09）", t)
+        self.assertIn("決定：NOT-ADOPTED（待使用者決定）", t)
+        self.assertIn("下一步：先補資料", t)
+        self.assertEqual(decision_text({"status": "fail", "result": {"verdict": "FAIL"}}, src), "")  # a bare verdict isn't a decision
+        rec_x = {"status": "ended", "decision": "none", "quotes": {"decision": "10/10 決定結束這個實驗"}}
+        self.assertEqual(decision_text(rec_x, src), "原文：10/10 決定結束這個實驗")
+
+    def test_report_decisions_must_quote_a_record(self):
+        from wd.research import ResearchSource
+        from wd.research_propose import propose
+        with tempfile.TemporaryDirectory() as d:
+            reg = Path(d) / "registry"
+            reg.mkdir()
+            a = {"id": "REG-20260101-aaaa", "ts": "2026-01-01", "title": "路線 A", "status": "registered；凍結（使用者 1/09）",
+                 "result": {"verdict": "FAIL", "cv": "對 12 個公開實測材料，誤差 3 倍", "adopt": "NOT-ADOPTED：等補資料再談"}}
+            b = {"id": "REG-20260102-bbbb", "ts": "2026-01-02", "title": "門檻", "status": "pass",
+                 "result": {"verdict": "PASS", "cv": "12 個公開實測材料上誤差 1.5 倍", "adopt": "達成門檻要多少尚未定義，待主管決定"}}
+            for r in (a, b):
+                (reg / f"{r['id']}.json").write_text(json.dumps(r, ensure_ascii=False))
+            f = {"statement": "誤差降到 1.5 倍", "basis": "12 個公開實測材料", "so_what": "可用", "change_if": "新材料變差",
+                 "cites": [{"id": b["id"], "role": "supports", "quote": "12 個公開實測材料上誤差 1.5 倍"}]}
+            answers = {
+                "請逐筆整理": {"records": [{"id": i, "name": "n", "why": "w", "result": "r", "level": 3, "level_quote": "公開實測材料",
+                                       "n": 12, "edges": []} for i in (a["id"], b["id"])]},
+                "請整理成兩層": {"goals": [{"id": "g-main", "title": "主目標", "bar": "誤差 2 倍內"}],
+                           "questions": [{"id": "q-route", "parent": "g-main", "kind": "route", "title": "路線",
+                                          "members": [a["id"], b["id"]]}]},
+                "請對每條途徑": {"goal_answer": {"text": "接近", "cites": [b["id"]]}, "questions": [{
+                    "id": "q-route", "holds": [], "fails": [], "unknown": [], "stuck": "none", "next": "", "decision": "",
+                    "findings": [f]}]},
+                # answered only when the report prompt carries the records' own decision text
+                "依途徑分組，新的在前）：\n[q-route] 路線\n  REG-20260102-bbbb": {
+                    "title": "進度", "one_page": {"goal": "g", "success": "s", "answer": "a", "why_hard": "w", "numbers": []},
+                    "learned": [{"headline": "誤差降到 1.5 倍", "basis": "公開實測", "so_what": "可用", "findings": ["f-route-1"]}],
+                    "routes": [], "unknowns": [], "next_weeks": [], "glossary": [],
+                    "decisions": [{"decision": "門檻定多少", "options": "", "recommendation": "", "who": "主管", "by_when": "",
+                                   "findings": ["f-route-1"], "evidence": {"id": b["id"], "quote": "尚未定義，待主管決定"}},
+                                  {"decision": "路線 A 要不要繼續", "options": "", "recommendation": "", "who": "主管", "by_when": "",
+                                   "findings": [], "evidence": {"id": "", "quote": ""}}],
+                    "settled": [{"item": "路線 A", "decided": "等補資料", "findings": [],
+                                 "evidence": {"id": a["id"], "quote": "等補資料再談"}},
+                                {"item": "編的", "decided": "x", "findings": [], "evidence": {"id": a["id"], "quote": "記錄裡沒有這句話"}}]},
+            }
+            old = os.environ.get("WD_CLAUDE")
+            os.environ["WD_CLAUDE"] = _fake_claude(d, answers)
+            try:
+                path = propose(ResearchSource("demo", reg), Path(d) / "data", Path(d), log=lambda *a: None)
+            finally:
+                os.environ.pop("WD_CLAUDE") if old is None else os.environ.__setitem__("WD_CLAUDE", old)
+            rep = json.loads(path.with_name(path.stem + ".report.json").read_text())
+            d1, d2 = rep["decisions"]
+            self.assertEqual(d1["evidence"]["id"], b["id"])
+            self.assertEqual(d1["warnings"], [])
+            self.assertNotIn("evidence", d2)
+            self.assertTrue(any("還沒定" in w for w in d2["warnings"]))
+            s1, s2 = rep["settled"]
+            self.assertEqual((s1["evidence"]["id"], s1["warnings"]), (a["id"], []))
+            self.assertIn(a["id"], s1["cites"])
+            self.assertNotIn("evidence", s2)
+            self.assertTrue(any("已經定了" in w for w in s2["warnings"]))
+            from wd.research import clean_report
+            self.assertEqual(clean_report(rep)["settled"][0]["evidence"]["id"], a["id"])  # survives the page's cleaning
+
+    def test_repo_must_look_like_owner_name(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.toml"
+            p.write_text(f'[hub]\nrealm = "work"\n[[hub.research]]\nname = "x"\npath = "{d}"\nrepo = "https://github.com/o/r"\n')
+            with self.assertRaises(cfgmod.ConfigError):
+                cfgmod.load(p)
+            p.write_text(f'[hub]\nrealm = "work"\n[[hub.research]]\nname = "x"\npath = "{d}"\nrepo = "o/r.x"\n')
+            self.assertEqual(cfgmod.load(p).hub.research[0].repo, "o/r.x")
+
+
 if __name__ == "__main__":
     unittest.main()
