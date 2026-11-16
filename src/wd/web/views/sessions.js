@@ -74,11 +74,11 @@ function studioArt(s, i) {
 // re-render every hub update triggers.
 const opened = new Set();
 const xa = (key) => ` data-x="${esc(key)}"`;
-const xc = (key) => (opened.has(key) ? " x open" : " x");
+const xc = (key) => (opened.has(key) ? " x xopen" : " x");
 function markClipped(el) {
   if (!el.querySelectorAll) return; // no DOM (smoke test)
   for (const n of el.querySelectorAll(".x")) {
-    const open = n.classList.contains("open");
+    const open = n.classList.contains("xopen");
     if (!open && n.scrollHeight <= n.clientHeight + 1 && n.scrollWidth <= n.clientWidth + 1) continue;
     n.insertAdjacentHTML("afterend", `<button type="button" class="xmore"${xa(n.dataset.x)}>${open ? "收起" : "更多"}</button>`);
   }

@@ -176,7 +176,7 @@ h2 small { font: 400 .78rem var(--font); color: var(--muted); margin-left: .35re
 .summary .lbl { font-weight: 600; font-size: .72rem; color: var(--muted); margin-right: .45em; letter-spacing: .04em; }
 .prompt { margin: 0; color: var(--muted); font-size: .82rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* 更多: shown only under text the browser actually clipped */
-.x.open { display: block; -webkit-line-clamp: unset !important; white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+.x.xopen { display: block; -webkit-line-clamp: unset !important; white-space: normal; overflow: visible; overflow-wrap: anywhere; }
 .xmore { align-self: flex-end; justify-self: end; margin: -.2rem 0 0 auto; display: block; font: inherit; font-size: .72rem; color: var(--muted);
   background: none; border: 0; padding: 0 .1rem; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
 .xmore:hover { color: var(--ink); }
