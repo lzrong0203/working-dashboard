@@ -194,7 +194,7 @@ def make_handler(cfg: cfgmod.Config):
 
 def start(cfg: cfgmod.Config) -> ThreadingHTTPServer | None:
     """Start in a background thread; returns None if not configured or port busy."""
-    if not cfg.view.browser_profiles:
+    if not cfg.view.browser_profiles and not cfg.view.pixel:  # it also tells the page where the pixel office is
         return None
     try:
         httpd = ThreadingHTTPServer(("127.0.0.1", cfg.view.opener_port), make_handler(cfg))

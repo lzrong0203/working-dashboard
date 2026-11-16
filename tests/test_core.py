@@ -348,9 +348,6 @@ class GuardTest(unittest.TestCase):
             self.assertNotIn(_hostname(v), LOOPBACK, v)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class OpenerTest(unittest.TestCase):
     def test_guards(self):
@@ -700,3 +697,156 @@ class ReviewFixesTest(unittest.TestCase):
         now = 10_000_000_000
         s = {"status": "idle", "started_at": now - 120_000, "status_since": now - 90_000, "last_reply_at": now - 90_000}
         self.assertEqual(attention(s, now, 5)[0], SOON)
+
+
+def _fake_claude(d: str, answers: dict) -> str:
+    fake = Path(d) / "fake-claude"
+    fake.write_text("#!" + sys.executable + "\nimport sys, json\nprompt = sys.stdin.read()\nA = " + repr(answers) +
+                    "\nfor k, v in A.items():\n    if k in prompt:\n        print(json.dumps({'structured_output': v}, ensure_ascii=False)); break\n"
+                    "else:\n    print(json.dumps({'structured_output': {'records': []}}))\n")
+    fake.chmod(0o755)
+    return str(fake)
+
+
+class ReconstructTest(unittest.TestCase):
+    DOC = """# 測試版實驗紀錄
+
+## 現況總表
+| 代號 | 狀態 |
+| T1 | 已結束 |
+
+## T1 記憶筆記
+起因：使用者常問重複的事，想讓 agent 自己記下做法。
+做法：開啟自動筆記，門檻 10 次。
+2026-10-02 起每晚自動比較 30 題，深入題兩版無差別。
+10/10 決定結束這個實驗。
+
+## T2 找文件工具
+第一輪：加上找文件工具，跟正式版比 28 題，列舉題答對多 6 題。
+"""
+
+    def run_reconstruct(self, d, answers):
+        from wd.research import ResearchSource
+        from wd.research_reconstruct import reconstruct
+        doc = Path(d) / "log.md"
+        doc.write_text(self.DOC, encoding="utf-8")
+        out = Path(d) / "recs"
+        src = ResearchSource("iw", out, format="reconstructed", unit="題", min_n=20,
+                             ladder=["只有想法", "離線題庫", "測試版每晚比較", "使用者比較", "正式版確認"])
+        old = os.environ.get("WD_CLAUDE")
+        os.environ["WD_CLAUDE"] = _fake_claude(d, answers)
+        try:
+            paths = reconstruct(src, [doc], Path(d), repo=None, workers=1, log=lambda *a: None)
+        finally:
+            os.environ.pop("WD_CLAUDE") if old is None else os.environ.__setitem__("WD_CLAUDE", old)
+        return src, out, paths
+
+    def test_quotes_dates_parents_and_outcomes(self):
+        t1 = {"key": "T1-r1", "line": "T1", "title": "記憶筆記", "date": "2026-10-02", "date_quote": "2026-10-02 起每晚自動比較",
+              "why": "重複的問題", "why_quote": "使用者常問重複的事", "change": "自動筆記", "change_quote": "開啟自動筆記，門檻 10 次",
+              "measure": "每晚比較", "measure_quote": "每晚自動比較 30 題", "n": 30, "result": "無差別", "result_quote": "深入題兩版無差別",
+              "effect": "no_difference", "decision": "ended", "decision_quote": "10/10 決定結束這個實驗", "parent_key": ""}
+        t2 = {"key": "T2-r1", "line": "T2", "title": "找文件", "date": "2026-11-01", "date_quote": "made up",
+              "why": "", "why_quote": "", "change": "找文件工具", "change_quote": "加上找文件工具",
+              "measure": "比 28 題", "measure_quote": "跟正式版比 28 題", "n": 99, "result": "多對 6 題", "result_quote": "列舉題答對多 6 題",
+              "effect": "better", "decision": "adopted", "decision_quote": "已經移進正式版（原文沒有這句）", "parent_key": "T1-r1"}
+        bogus = {**t2, "key": "X-1", "line": "", "change_quote": "nowhere", "result_quote": "nowhere either"}
+        with tempfile.TemporaryDirectory() as d:
+            src, out, paths = self.run_reconstruct(d, {"## T1 記憶筆記": {"records": [t1]}, "## T2 找文件工具": {"records": [t2, bogus]}})
+            recs = {json.loads(p.read_text())["source"]["key"]: json.loads(p.read_text()) for p in paths}
+            self.assertEqual(set(recs), {"T1-r1", "T2-r1"})  # nothing verifiable about the bogus round
+            a, b = recs["T1-r1"], recs["T2-r1"]
+            self.assertTrue(a["id"].startswith("REC-20261002-"))
+            self.assertEqual((a["kind"], a["n"], a["result"]["verdict"][:4]), ("reconstructed", 30, "FAIL"))  # no difference = didn't help
+            self.assertTrue(a["status"].startswith("ended"))
+            self.assertEqual(b["ts"], "")  # date not in the section and no commit backs it
+            self.assertEqual(b["n"], 0)  # 99 isn't in the text
+            self.assertEqual(b["decision"], "none")  # decision quote not in the text
+            self.assertEqual(b["parent"], a["id"])
+            self.assertTrue(b["result"]["verdict"].startswith("PASS"))
+            # the loader reads them, links follow the parent, the page knows they were reconstructed
+            from wd.research import ResearchProject
+            data = ResearchProject(src, Path(d) / "data").data()
+            self.assertTrue(data["reconstructed"])
+            self.assertEqual(data["ladder"][2], "測試版每晚比較")
+            r_b = next(r for r in data["records"] if r["id"] == b["id"])
+            self.assertEqual(r_b["outcome"], "pass")
+            self.assertIn(("follows", a["id"]), [(e["type"], e["to"]) for e in r_b["edges"]])
+            self.assertIn("log.md §T2 找文件工具", r_b["source"])
+            # a rerun that no longer finds T2 removes its file, and leaves unrelated files alone
+            (out / "notes.json").write_text("{}")
+            self.run_reconstruct(d, {"## T1 記憶筆記": {"records": [t1]}})
+            self.assertEqual(sorted(p.name for p in out.glob("*.json")), sorted([f"{a['id']}.json", "notes.json"]))
+
+    def test_refuses_prereg_sources(self):
+        from wd import research_reconstruct
+        from wd.research import ResearchSource
+
+        class Cfg:
+            class hub:
+                research = [ResearchSource("mof", Path("/nonexistent"))]
+                realm = "work"
+            profiles = []
+        self.assertEqual(research_reconstruct.main(Cfg, "mof", ["x.md"], None, "sonnet", None), 2)
+
+
+class CodexRound2Test(unittest.TestCase):
+    def test_confidence_ignores_open_and_void_and_follows_ladder(self):
+        from wd.research import ResearchSource
+        from wd.research_propose import confidence
+        recs = {"a": {"outcome": "pass", "level": 2, "n": 0}, "b": {"outcome": "running", "level": 5, "n": 50},
+                "c": {"outcome": "void", "level": 5, "n": 50}}
+        self.assertEqual(confidence([{"id": "a", "role": "supports"}, {"id": "b", "role": "supports"}], recs), "只在模擬內成立")
+        self.assertEqual(confidence([{"id": "c", "role": "supports"}], recs), "分不出來或還在跑")
+        src = ResearchSource("iw", Path("."), format="reconstructed", unit="題", min_n=20,
+                             ladder=["只有想法", "離線題庫", "測試版每晚比較", "使用者比較", "正式版確認"])
+        recs2 = {"x": {"outcome": "pass", "level": 3, "n": 28}, "y": {"outcome": "fail", "level": 3, "n": 5}}
+        self.assertEqual(confidence([{"id": "x", "role": "supports"}], recs2, src), "在「測試版每晚比較」成立")
+        self.assertEqual(confidence([{"id": "y", "role": "supports"}], recs2, src), "初步、樣本小（少於 20 題不裁定）")
+        self.assertEqual(confidence([], recs2, src), "沒有直接支持的紀錄")
+
+    def test_numbers_are_whole_tokens(self):
+        from wd.research_propose import numbers_ok
+        self.assertEqual(numbers_ok("誤差 12 倍、1.5 倍、3 倍", ["共 312 個，11.50 分，REG-20260103-abcd"]), ["12", "1.5", "3"])
+        self.assertEqual(numbers_ok("誤差 12 倍", ["誤差 12 倍"]), [])
+
+    def test_report_is_cleaned_and_nan_rejected(self):
+        from wd.research import ResearchProject, ResearchSource, clean_report
+        rep = clean_report({"learned": {}, "reviews": [None, {"at": "11/16", "by": "x", "note": "y"}], "decisions": [{"decision": "d", "cites": ["a", 3]}]})
+        self.assertEqual(rep["learned"], [])
+        self.assertEqual([r["note"] for r in rep["reviews"]], ["y"])
+        self.assertEqual(rep["decisions"][0]["cites"], ["a"])
+        with tempfile.TemporaryDirectory() as d:
+            reg = Path(d) / "reg"
+            reg.mkdir()
+            (reg / "REG-20260101-aaaa.json").write_text(json.dumps({"id": "REG-20260101-aaaa", "ts": "2026-01-01"}))
+            ov = Path(d) / "data" / "research"
+            ov.mkdir(parents=True)
+            (ov / "demo.report.json").write_text('{"title": "t", "x": NaN}')
+            data = ResearchProject(ResearchSource("demo", reg), Path(d) / "data").data()
+            self.assertIsNone(data["report"])
+            json.dumps(data, allow_nan=False)  # the API can always serialise it
+
+    def test_pixel_keeps_others_mappings_and_unreadable_config(self):
+        from wd import pixel
+        with tempfile.TemporaryDirectory() as d:
+            old = pixel.HOME
+            pixel.HOME = Path(d)
+            try:
+                (Path(d) / "config.json").write_text(json.dumps({"standalone": {"areaMappings": {"mine-by-hand": ["laptop"]}}}))
+                pixel.update_settings(area_mappings={"a": ["h1"]})
+                pixel.update_settings(area_mappings={"b": ["h2"]})
+                m = json.loads((Path(d) / "config.json").read_text())["standalone"]["areaMappings"]
+                self.assertEqual(m, {"mine-by-hand": ["laptop"], "b": ["h2"]})  # a (ours, gone) removed; the hand-made one kept
+                (Path(d) / "config.json").write_text("{broken")
+                with self.assertRaises(pixel.UnreadableConfig):
+                    pixel.update_settings(area_mappings={"c": ["h3"]})
+                self.assertEqual((Path(d) / "config.json").read_text(), "{broken")
+                import plistlib
+                self.assertEqual(plistlib.loads(pixel.plist_for("/n", "/Users/A&B/cli.js", 3100, Path("/w")))["ProgramArguments"][1], "/Users/A&B/cli.js")
+            finally:
+                pixel.HOME = old
+
+
+if __name__ == "__main__":
+    unittest.main()

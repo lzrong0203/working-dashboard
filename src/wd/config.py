@@ -151,7 +151,7 @@ def _default_profiles() -> list[Profile]:
 
 
 def _research(raw: list) -> list:
-    from wd.research import DEFAULT_FIELDS, ResearchSource
+    from wd.research import DEFAULT_FIELDS, DEFAULT_LADDER, ResearchSource
 
     out, names = [], set()
     for r in raw or []:
@@ -163,11 +163,20 @@ def _research(raw: list) -> list:
         unknown = set(fields) - set(DEFAULT_FIELDS)
         if unknown:
             raise ConfigError(f"[[hub.research]] {name}: unknown fields {sorted(unknown)}")
+        fmt = str(r.get("format") or "prereg-json")
+        if fmt not in ("prereg-json", "reconstructed"):
+            raise ConfigError(f"[[hub.research]] {name}: format must be prereg-json or reconstructed, got {fmt!r}")
+        ladder = [str(x) for x in r.get("ladder", [])] or list(DEFAULT_LADDER)
+        if len(ladder) != 5 or not all(x.strip() for x in ladder):
+            raise ConfigError(f"[[hub.research]] {name}: ladder needs exactly 5 steps, weakest first")
+        min_n = r.get("min_n", 8)
+        if isinstance(min_n, bool) or not isinstance(min_n, int) or min_n < 1:
+            raise ConfigError(f"[[hub.research]] {name}: min_n must be a positive integer")
         out.append(ResearchSource(
-            name=name, path=expand(r["path"]), label=str(r.get("label") or ""),
-            format=str(r.get("format") or "prereg-json"),
+            name=name, path=expand(r["path"]), label=str(r.get("label") or ""), format=fmt,
             overlay=expand(r["overlay"]) if r.get("overlay") else None, fields=fields,
             forbidden=[str(x) for x in r.get("forbidden", [])],
+            ladder=ladder, unit=str(r.get("unit") or "個材料"), min_n=min_n,
         ))
     return out
 

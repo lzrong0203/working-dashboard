@@ -35,11 +35,10 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from wd.research import CODE, MAX_FILE, ResearchProject, ResearchSource, _flat, _get, addenda
+from wd.research import CODE, DEFAULT_LADDER, MAX_FILE, ResearchProject, ResearchSource, _flat, _get, addenda
 
 LINK_TYPES = ("because", "follows", "readjudicates", "supersedes", "corrects", "uses")
 STUCK = ("method", "measure", "external", "not_started", "closed", "none")
-LEVELS = {1: "只有想法", 2: "模擬對模擬", 3: "對公開實測", 4: "對自有或供應方實測", 5: "目標條件下實測確認"}
 
 SYSTEM = (
     "你是研究整理助理，幫一位研究者把大量、分散的實驗登記整理成人看得懂的內容。"
@@ -107,12 +106,16 @@ M_SCHEMA = {"type": "object", "properties": {
         "required": ["item", "change_if", "findings"]}},
     "decisions": {"type": "array", "items": {"type": "object", "properties": {
         "decision": {"type": "string"}, "options": {"type": "string"}, "recommendation": {"type": "string"},
-        "who": {"type": "string"}, "by_when": {"type": "string"}}, "required": ["decision", "options", "recommendation", "who", "by_when"]}},
+        "who": {"type": "string"}, "by_when": {"type": "string"}, "findings": {"type": "array", "items": {"type": "string"}}},
+        "required": ["decision", "options", "recommendation", "who", "by_when", "findings"]}},
+    "settled": {"type": "array", "items": {"type": "object", "properties": {
+        "item": {"type": "string"}, "decided": {"type": "string"}, "findings": {"type": "array", "items": {"type": "string"}}},
+        "required": ["item", "decided", "findings"]}},
     "next_weeks": {"type": "array", "items": {"type": "object", "properties": {
         "task": {"type": "string"}, "learn": {"type": "string"}}, "required": ["task", "learn"]}},
     "glossary": {"type": "array", "items": {"type": "object", "properties": {
         "term": {"type": "string"}, "plain": {"type": "string"}}, "required": ["term", "plain"]}},
-}, "required": ["title", "one_page", "learned", "routes", "unknowns", "decisions", "next_weeks", "glossary"]}
+}, "required": ["title", "one_page", "learned", "routes", "unknowns", "decisions", "settled", "next_weeks", "glossary"]}
 
 R_PROMPT = """全部登記的索引（找關係的對象；每行：編號｜代號｜日期｜標題）：
 {index}
@@ -121,9 +124,9 @@ R_PROMPT = """全部登記的索引（找關係的對象；每行：編號｜代
 - name：16 字內的白話短名，講這筆在問什麼。不要用代號。
 - why：為什麼做（60 字內，講動機或承接了哪個結果）。
 - result：結果與意義（80 字內）。結果常寫在「後續補記」裡，要一起看；真的沒有任何結果才寫「還沒有結果」。
-- level：證據層級，1 只有想法或規劃；2 模擬對模擬（或模型對模擬標籤）；3 對公開文獻的實測數據；4 對供應方或自己量的實測；5 目標條件下的實測確認。0 表示看不出來。
+- level：證據層級，{levels}。0 表示看不出來。
 - level_quote：從這筆登記文字逐字複製、能看出層級的一小段（40 字內）；level 為 0 時給空字串。
-- n：這筆用了幾個材料（或結構、樣本），文字裡沒寫就給 0。
+- n：這筆的樣本數，以「{unit}」計，文字裡沒寫就給 0。
 - edges：它和更早登記之間有文字根據的關係；type 只能是 because（因為那筆的結果才做）、follows（同一條線的下一步或重做）、readjudicates（用新規則重判）、supersedes（取代）、corrects（更正）、uses（用到那筆定下的常數、規則或方法）。quote 必須從這筆登記逐字複製（80 字內）。to 可以是編號或索引裡的代號。
 
 登記內容：
@@ -145,8 +148,8 @@ Q_PROMPT = """下面是一個研究專案全部實驗登記的白話摘要（每
 
 C_PROMPT = """目標：{goal}（怎樣算成功：{bar}）
 
-下面是這個目標底下每條途徑或問題，以及屬於它的登記摘要（編號｜日期｜登記判定｜證據層級｜材料數｜白話名｜為什麼｜結果）。
-登記判定是「這筆是否符合它事先登記的規則」，不等於支持或反對這條途徑；例如一筆想證明「某方法不可靠」的登記通過，是在說那個方法不可靠。
+下面是這個目標底下每條途徑或問題，以及屬於它的登記摘要（編號｜日期｜登記判定｜證據層級｜樣本數（{unit}）｜白話名｜為什麼｜結果）。
+{verdict_note}
 
 {blocks}
 
@@ -156,7 +159,7 @@ C_PROMPT = """目標：{goal}（怎樣算成功：{bar}）
 - next：下一步（一句），decision：需要研究者或主管決定的事（沒有就給空字串）。
 - findings：0–3 條真正學到的事（會改變下一步、或打開或關掉一條路的才寫）。每條：
   statement 一句可被反駁的結論（只能有一個數字，用「幾倍」而不是 dex 或 R²，數字後面說跟什麼比）；
-  basis 憑什麼（跟什麼比、幾個材料）；so_what 所以要怎樣；change_if 什麼結果會推翻它；
+  basis 憑什麼（跟什麼比、幾{unit}）；so_what 所以要怎樣；change_if 什麼結果會推翻它；
   cites 每個根據的登記：role 是 supports（支持這句結論）、against（反對）、limits（限制適用範圍），quote 從該登記摘要的「結果」或「為什麼」逐字複製。
 最後 goal_answer：這個目標目前的整體答案（一句，60 字內）與根據。
 """
@@ -166,7 +169,8 @@ M_PROMPT = """請把下面的研究整理寫成一份 10–15 分鐘的會議報
 - 不要出現內部實驗代號；一句最多一個數字；用「幾倍」，不用 dex、R² 等術語（真的要用就放進 glossary 解釋）；每個數字後面說跟什麼比。
 - 只能使用下面「結論清單」裡的內容；learned 與 unknowns 一定要列出所根據的結論 id（findings 欄位），不得新增沒有出處的說法。
 - 把握程度不要自己寫，報告產生器會依結論 id 自動帶出。
-- learned 選 3–5 條「會改變下一步、或打開或關掉一條路線」的；routes 列主命題的各條途徑；unknowns 最多 3 條可能翻盤的；decisions 只列真的需要決定的；next_weeks 最多 5 項，各寫做完會知道什麼。
+- learned 選 3–5 條「會改變下一步、或打開或關掉一條路線」的；routes 列主命題的各條途徑；unknowns 最多 3 條可能翻盤的；
+  decisions 只列結論清單裡「待決」明寫還沒定、而且研究者自己定不了的事，並列出根據的結論 id；登記裡已經寫好下一步、規則或已做過決定的，放進 settled（已經定了、不必上會），不要當成待決；next_weeks 最多 5 項，各寫做完會知道什麼。
 - 要能在會議上講：one_page 的 goal 60 字內、success 80 字內、answer 80 字內、why_hard 80 字內；numbers 正好 3 個，每個一句、列出根據的結論 id；
   learned 的 headline 一句結論（30 字內）、basis 100 字內、so_what 80 字內；unknowns 的 item 40 字內、change_if 80 字內；decisions 每欄 60 字內；next_weeks 每項 50 字內。
 {rules}
@@ -176,6 +180,35 @@ M_PROMPT = """請把下面的研究整理寫成一份 10–15 分鐘的會議報
 結論清單（id｜把握｜結論｜憑什麼｜所以｜什麼會推翻它）：
 {findings}
 """
+
+
+# ---- per-project vocabulary --------------------------------------------------------
+VERDICT_NOTE = {
+    False: "登記判定是「這筆是否符合它事先登記的規則」，不等於支持或反對這條途徑；例如一筆想證明「某方法不可靠」的登記通過，是在說那個方法不可靠。",
+    True: "這些紀錄是事後從專案文件整理的，沒有事先定的門檻。判定是整理時讀出的「這次改法比對照好（pass）、沒改善或變差（fail）、看不出來（inconclusive）、還在跑（running）」，不等於支持或反對這條途徑。",
+}
+
+
+def levels_text(src: ResearchSource) -> str:
+    return "；".join(f"{k} {name}" for k, name in enumerate(src.ladder, 1))
+
+
+def adapt(prompt: str, src: ResearchSource) -> str:
+    """Reconstructed records were never registered: say 紀錄, not 登記."""
+    return prompt.replace("事先登記", "事先寫下").replace("登記", "紀錄") if src.reconstructed else prompt
+
+
+def conf_ladder(src: ResearchSource | None) -> list[str]:
+    """Confidence labels, weakest first. The default ladder keeps its
+    established wording; a custom ladder gets labels built from its steps."""
+    ladder = list(src.ladder) if src else list(DEFAULT_LADDER)
+    unit, min_n = (src.unit, src.min_n) if src else ("個材料", 8)
+    word = "紀錄" if src and src.reconstructed else "登記"
+    if ladder == DEFAULT_LADDER:
+        low, mid3, mid4, top = "只在模擬內成立", "對公開實測成立", "對實測成立", "目標條件下實測確認"
+    else:
+        low, mid3, mid4, top = f"只在「{ladder[1]}」成立", f"在「{ladder[2]}」成立", f"在「{ladder[3]}」成立", f"{ladder[4]}"
+    return [f"沒有直接支持的{word}", "證據層級不明", "分不出來或還在跑", low, f"初步、樣本小（少於 {min_n} {unit}不裁定）", mid3, mid4, top]
 
 
 def brief(raw: dict, src: ResearchSource) -> str:
@@ -200,6 +233,8 @@ def brief(raw: dict, src: ResearchSource) -> str:
             kept.append(piece)
             budget -= len(piece)
         parts.append(("後續補記（新的在後）", "\n".join(reversed(kept))))
+    if isinstance(raw.get("source_excerpt"), str):  # reconstructed: the write-up it came from
+        parts.append(("原文節錄", raw["source_excerpt"][:3000]))
     return "\n".join(f"{k}：{v}" for k, v in parts if v)
 
 
@@ -257,37 +292,57 @@ def call_claude(prompt: str, schema: dict, config_dir: Path, model: str, timeout
 
 
 # ---- rules the model doesn't get to decide -----------------------------------------
+def _strings(x):
+    """Every string inside a JSON value."""
+    if isinstance(x, str):
+        yield x
+    elif isinstance(x, dict):
+        for v in x.values():
+            yield from _strings(v)
+    elif isinstance(x, list):
+        for v in x:
+            yield from _strings(v)
+
+
 NUM = re.compile(r"\d+(?:\.\d+)?")
 
 
+_NOT_EVIDENCE = re.compile(r"RE[GC]-\d{8}-[0-9a-f]{4}|\d{4}-\d\d-\d\d(?:T[\d:.]+(?:Z|[+-]\d\d:?\d\d)?)?")
+
+
 def numbers_ok(text: str, sources: list[str]) -> list[str]:
-    """Numbers in a sentence that appear in none of its cited records."""
-    blob = " ".join(sources)
-    return [x for x in NUM.findall(text or "") if x not in blob and not (len(x) == 1 and x in "012345")]
+    """Numbers in a sentence that appear, as whole numbers, in none of its
+    cited records (record ids and timestamps don't count as evidence)."""
+    blob = _NOT_EVIDENCE.sub(" ", " ".join(sources))
+    have = set(re.findall(r"(?<![\d.])\d+(?:\.\d+)?(?![\d.])", blob))
+    return [x for x in NUM.findall(text or "") if x not in have]
 
 
-def confidence(cites: list[dict], recs: dict) -> str:
+def confidence(cites: list[dict], recs: dict, src: ResearchSource | None = None) -> str:
     """A fixed vocabulary computed from the supporting records' evidence level,
     sample size and verdicts (never chosen by the model)."""
+    none, unclear, running, low, small, mid3, mid4, top = conf_ladder(src)
+    min_n = src.min_n if src else 8
     sup = [recs[c["id"]] for c in cites if c.get("role") == "supports" and c["id"] in recs]
     against = any(c.get("role") == "against" for c in cites)
+    done = [r for r in sup if r.get("outcome") in ("pass", "fail")]  # finished and not void: only these carry weight
     if not sup:
-        label = "沒有直接支持的登記"
-    elif all(r.get("outcome") in ("inconclusive", "running", "open", "other") for r in sup):
-        label = "分不出來或還在跑"
+        label = none
+    elif not done:
+        label = running
     else:
-        best = max(sup, key=lambda r: (int(r.get("level") or 0), int(r.get("n") or 0)))
+        best = max(done, key=lambda r: (int(r.get("level") or 0), int(r.get("n") or 0)))
         lv, n = int(best.get("level") or 0), int(best.get("n") or 0)
         if lv >= 5:
-            label = "目標條件下實測確認"
-        elif lv >= 3 and n >= 8:
-            label = "對實測成立" if lv == 4 else "對公開實測成立"
+            label = top
+        elif lv >= 3 and n >= min_n:
+            label = mid4 if lv == 4 else mid3
         elif lv >= 3:
-            label = "初步、樣本小（少於 8 個材料不裁定）"
+            label = small
         elif lv == 2:
-            label = "只在模擬內成立"
+            label = low
         else:
-            label = "證據層級不明"
+            label = unclear
     return label + ("；有反證" if against else "")
 
 
@@ -372,8 +427,10 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
         except (FileNotFoundError, ValueError):
             old = {}
         overlay = {"goals": old.get("goals", []), "questions": old.get("questions", []), "records": old.get("records", {}),
-                   "edges": [e for e in old.get("edges", []) if isinstance(e, dict) and e.get("by") == "human"]}
+                   "edges": [e for e in old.get("edges", []) if isinstance(e, dict)]}
         want = set(stages.split(",")) if stages != "all" else {"records", "structure", "claims", "report"}
+        if only_questions:  # #17: structure only, no record batches
+            want = {"structure"}
 
         def save():
             w.write({**overlay, "generated": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "model": model, "synth_model": synth})
@@ -387,7 +444,8 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
                 chunk = ids[n:n + batch]
                 body = "\n\n---\n".join(brief(raw[i], src) for i in chunk)
                 try:
-                    rd = call_claude(R_PROMPT.format(index=short_index, n=len(chunk), records=body), R_SCHEMA, config_dir, model)
+                    rd = call_claude(adapt(R_PROMPT, src).format(index=short_index, n=len(chunk), records=body, levels=levels_text(src), unit=src.unit),
+                                     R_SCHEMA, config_dir, model)
                 except Exception as e:
                     log(f"[propose] records batch {n // batch + 1}: {e}")
                     continue
@@ -401,9 +459,11 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
                         if lv and not quote_supported(_flat(r.get("level_quote"), 200), text):
                             lv = 0
                         entry = overlay["records"].setdefault(i, {})
+                        n_ = max(0, int(r.get("n") or 0))
+                        if n_ and not re.search(rf"(?<![\d.]){n_}(?![\d.])", _NOT_EVIDENCE.sub(" ", raw_text[i])):
+                            n_ = 0  # a count the record doesn't state can't move confidence
                         entry.update({"name": _flat(strip_codes(r.get("name")), 40), "why": _flat(r.get("why"), 200),
-                                      "result": _flat(r.get("result"), 240), "level": lv,
-                                      "n": max(0, int(r.get("n") or 0)), "by": "ai"})
+                                      "result": _flat(r.get("result"), 240), "level": lv, "n": n_, "by": "ai"})
                         for e in r.get("edges", []) if isinstance(r.get("edges"), list) else []:
                             to = str(e.get("to", "")) if isinstance(e, dict) else ""
                             to = to if to in recs else code_to_id.get(to, "")
@@ -435,7 +495,7 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
                 struct = "\n既有的路線整理（同事整理，不一定對）：\n" + structure.read_text(encoding="utf-8", errors="replace")[:8000] + "\n"
             idx = "\n".join(f"{i}｜{recs[i]['ts'][:10]}｜{recs[i]['outcome']}｜{summ(i)[0].get('name') or recs[i]['title'][:40]}｜"
                             f"{summ(i)[0].get('result', '')[:80]}｜{summ(i)[0].get('level', 0)}" for i in ids)
-            qd = call_claude(Q_PROMPT.format(context=ctx, structure=struct, index=idx), Q_SCHEMA, config_dir, synth)
+            qd = call_claude(adapt(Q_PROMPT, src).format(context=ctx, structure=struct, index=idx), Q_SCHEMA, config_dir, synth)
             if not isinstance(qd, dict) or not isinstance(qd.get("questions"), list) or not qd["questions"]:
                 raise RuntimeError("structure stage returned no questions; overlay left as it was")
             goals = [{k: _flat(g.get(k), 300) for k in ("id", "title", "bar")} | {"by": "ai"}
@@ -472,7 +532,8 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
                              f"{enriched[i].get('name', '')}｜{enriched[i].get('why', '')}｜{enriched[i].get('result', '')}" for i in mem]
                     blocks.append(f"[{q['id']}] {q['title']}（{len(mem)} 筆）\n" + ("\n".join(lines) or "  （沒有登記）"))
                 try:
-                    cd = call_claude(C_PROMPT.format(goal=g["title"], bar=g.get("bar", ""), blocks="\n\n".join(blocks)), C_SCHEMA, config_dir, synth)
+                    cd = call_claude(adapt(C_PROMPT, src).format(goal=g["title"], bar=g.get("bar", ""), blocks="\n\n".join(blocks), unit=src.unit,
+                                                                   verdict_note=VERDICT_NOTE[src.reconstructed]), C_SCHEMA, config_dir, synth)
                 except Exception as e:
                     log(f"[propose] claims {g['id']}: {e}")
                     continue
@@ -503,7 +564,12 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
                         cites = []
                         for c in f.get("cites", []) if isinstance(f.get("cites"), list) else []:
                             if isinstance(c, dict) and c.get("id") in recs and c.get("role") in ("supports", "against", "limits"):
-                                src_text = _norm(" ".join([enriched[c["id"]].get("result", ""), enriched[c["id"]].get("why", ""), raw_text.get(c["id"], "")]))
+                                raw_c = raw_text.get(c["id"], "")
+                                # AI summaries count only when every number in them is in the record itself,
+                                # so an invented summary can't vouch for itself
+                                summ_ok = [t for t in (enriched[c["id"]].get("result", ""), enriched[c["id"]].get("why", ""))
+                                           if t and not numbers_ok(t, [raw_c])]
+                                src_text = _norm(" ".join([*summ_ok, raw_c]))
                                 if quote_supported(_flat(c.get("quote"), 300), src_text):
                                     cites.append({"id": c["id"], "role": c["role"], "quote": _flat(c.get("quote"), 200)})
                         st_ = _flat(f.get("statement"), 200)
@@ -511,10 +577,11 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
                         findings.append({
                             "id": f"f-{q['id'][2:]}-{k + 1}", "statement": st_, "basis": basis,
                             "so_what": _flat(f.get("so_what"), 200), "change_if": _flat(f.get("change_if"), 200), "cites": cites,
-                            "confidence": confidence(cites, enriched),
+                            "confidence": confidence(cites, enriched, src),
                             "warnings": checks(f"{st_} {basis}", cites, enriched, raw_text, forbidden) + ([] if cites else ["沒有可驗證的出處"]),
                             "by": "ai"})
                     q["findings"] = findings[:3]
+                overlay["claims_fp"] = data.get("records_fp") or proj.records_fingerprint()
                 save()
                 log(f"[propose] claims {g['id']}: {len(qs)} questions")
 
@@ -528,18 +595,17 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
                 for q in overlay["questions"] if q.get("parent") == g["id"]) for g in overlay["goals"])
             f_txt = "\n".join(f"{fid}｜{f['confidence']}｜{f['statement']}｜{f['basis']}｜{f['so_what']}｜{f['change_if']}" for fid, (q, f) in fl.items())
             rules = (f"- 不得使用這些詞：{'、'.join(forbidden)}\n" if forbidden else "")
-            md = call_claude(M_PROMPT.format(rules=rules, goals=goals_txt, findings=f_txt), M_SCHEMA, config_dir, synth, timeout=1500)
+            md = call_claude(adapt(M_PROMPT, src).format(rules=rules, goals=goals_txt, findings=f_txt), M_SCHEMA, config_dir, synth, timeout=1500)
             if not isinstance(md, dict) or not md.get("learned"):
                 raise RuntimeError("report stage returned nothing usable; previous report kept")
-            weakest_order = ["沒有直接支持的登記", "證據層級不明", "分不出來或還在跑", "只在模擬內成立", "初步、樣本小（少於 8 個材料不裁定）",
-                             "對公開實測成立", "對實測成立", "目標條件下實測確認"]
+            weakest_order = conf_ladder(src)
 
             def from_findings(fids):
                 fids = [x for x in fids if x in fl]
-                cites = sorted({c["id"] for x in fids for c in fl[x][1]["cites"]}, key=lambda i: recs[i]["ts"])
+                cites = sorted({c["id"] for x in fids for c in fl[x][1]["cites"] if c["id"] in recs}, key=lambda i: recs[i]["ts"])
                 labels = [fl[x][1]["confidence"] for x in fids]
                 base = [lb.split("；")[0] for lb in labels]
-                conf = min(base, key=lambda lb: weakest_order.index(lb) if lb in weakest_order else 0) if base else "沒有直接支持的登記"
+                conf = min(base, key=lambda lb: weakest_order.index(lb) if lb in weakest_order else 0) if base else weakest_order[0]
                 if any("有反證" in lb for lb in labels):
                     conf += "；有反證"
                 return fids, cites, conf
@@ -574,16 +640,34 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
             for x in md.get("unknowns", [])[:3]:
                 fids, cites, _ = from_findings(x.get("findings", []))
                 report["unknowns"].append({"item": _flat(x.get("item"), 200), "change_if": _flat(x.get("change_if"), 200), "cites": cites})
-            report["decisions"] = [{k: _flat(x.get(k), 240) for k in ("decision", "options", "recommendation", "who", "by_when")}
-                                   for x in md.get("decisions", []) if isinstance(x, dict)][:4]
+            for x in [x for x in md.get("decisions", []) if isinstance(x, dict)][:4]:
+                fids, cites, _ = from_findings(x.get("findings", []) if isinstance(x.get("findings"), list) else [])
+                report["decisions"].append({**{k: _flat(x.get(k), 240) for k in ("decision", "options", "recommendation", "who", "by_when")},
+                                            "findings": fids, "cites": cites, "warnings": [] if fids else ["沒有對應的結論，請先核對是不是真的還沒定"]})
+            report["settled"] = []
+            for x in [x for x in md.get("settled", []) if isinstance(x, dict)][:6]:
+                fids, cites, _ = from_findings(x.get("findings", []) if isinstance(x.get("findings"), list) else [])
+                report["settled"].append({"item": _flat(x.get("item"), 120), "decided": _flat(x.get("decided"), 240), "findings": fids, "cites": cites})
             report["next_weeks"] = [{k: _flat(x.get(k), 200) for k in ("task", "learn")} for x in md.get("next_weeks", []) if isinstance(x, dict)][:5]
             report["glossary"] = [{k: _flat(x.get(k), 160) for k in ("term", "plain")} for x in md.get("glossary", []) if isinstance(x, dict)][:10]
             report["cutoff"] = max((recs[i]["ts"] for i in ids), default="")[:10]
-            report["fingerprint"] = data.get("records_fp") or proj.records_fingerprint()
+            # the findings' snapshot, not today's: a report-only rerun over old claims stays marked stale
+            report["fingerprint"] = overlay.get("claims_fp") or data.get("records_fp") or proj.records_fingerprint()
             report["generated"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
             report["model"] = synth
             report["status"] = "draft"
-            w.write(report, out_path.with_name(out_path.stem + ".report.json"))
+            hits = sorted({word for word in forbidden for t in _strings(report) if word and word in t})
+            report["warnings"] = [f"用了專案不宣稱的詞：{'、'.join(hits)}"] if hits else []
+            rp = out_path.with_name(out_path.stem + ".report.json")
+            try:
+                prev = json.loads(rp.read_text(encoding="utf-8"))
+            except (FileNotFoundError, ValueError):
+                prev = {}
+            if isinstance(prev, dict) and (prev.get("reviews") or prev.get("status") not in (None, "", "draft")):
+                # someone checked or edited the current report: keep it, park the new draft beside it
+                rp = rp.with_name(out_path.stem + ".report.new.json")
+                log(f"[propose] the current report has human edits; new draft written to {rp.name} instead")
+            w.write(report, rp)
             log(f"[propose] report: {len(report['learned'])} findings, {len(report['decisions'])} decisions")
     finally:
         w.close()

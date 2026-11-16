@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 import re
 import sys
 import time
@@ -101,15 +102,35 @@ def _write_json(path: Path, data) -> None:
     os.replace(tmp, path)
 
 
+class UnreadableConfig(Exception):
+    pass
+
+
 def _read_config() -> dict:
+    """pixel-agents' config; {} when it doesn't exist yet. A file that exists
+    but can't be parsed raises: overwriting it would throw away its settings."""
     try:
         d = json.loads((HOME / "config.json").read_text(encoding="utf-8"))
-        return d if isinstance(d, dict) else {}
-    except (FileNotFoundError, ValueError):
+    except FileNotFoundError:
         return {}
+    except (OSError, ValueError) as e:
+        raise UnreadableConfig(f"{HOME / 'config.json'}: {e}") from e
+    if not isinstance(d, dict):
+        raise UnreadableConfig(f"{HOME / 'config.json'}: not a JSON object")
+    return d
 
 
-def update_settings(**kw) -> None:
+OWNED = "wd-owned.json"  # which areaMappings keys the bridge wrote, so others' mappings survive
+
+
+def _owned() -> set[str]:
+    try:
+        return {x for x in json.loads((HOME / OWNED).read_text(encoding="utf-8")) if isinstance(x, str)}
+    except (OSError, ValueError, TypeError):
+        return set()
+
+
+def update_settings(area_mappings: dict | None = None, **kw) -> None:
     d = _read_config()
     st = d.setdefault("standalone", {})
     if not isinstance(st, dict):
@@ -118,14 +139,23 @@ def update_settings(**kw) -> None:
     for k, v in kw.items():
         if st.get(k) != v:
             st[k], changed = v, True
+    if area_mappings is not None:
+        old = st.get("areaMappings") if isinstance(st.get("areaMappings"), dict) else {}
+        mine = _owned()
+        merged = {k: v for k, v in old.items() if k not in mine and k not in area_mappings} | area_mappings
+        if merged != old:
+            st["areaMappings"], changed = merged, True
+        if set(area_mappings) != mine:
+            HOME.mkdir(parents=True, exist_ok=True)
+            _write_json(HOME / OWNED, sorted(area_mappings))
     if changed:
         HOME.mkdir(parents=True, exist_ok=True)
         _write_json(HOME / "config.json", d)
 
 
 # ---- talking to pixel-agents ---------------------------------------------------------
-def server() -> tuple[str, str] | None:
-    """(base url, token) of a live local pixel-agents server, from its registry."""
+def server() -> tuple[str, str, int] | None:
+    """(base url, token, pid) of a live local pixel-agents server, from its registry."""
     best = None
     for p in sorted((HOME / "servers").glob("*.json")):
         try:
@@ -134,7 +164,7 @@ def server() -> tuple[str, str] | None:
         except (OSError, ValueError, KeyError, TypeError):
             continue
         if d.get("standalone") and d.get("token") and d.get("port"):
-            best = (f"http://127.0.0.1:{int(d['port'])}", str(d["token"]))
+            best = (f"http://127.0.0.1:{int(d['port'])}", str(d["token"]), int(d["pid"]))
     return best
 
 
@@ -161,6 +191,8 @@ class Bridge:
         self.cfg = cfg
         self.known: dict[str, dict] = {}  # session key -> {sid, label, status, activity, tool}
         self.mappings: dict[str, list[str]] = {}
+        self.server_id: tuple | None = None
+        self.cfg_err = ""
 
     def native(self, s: dict) -> bool:
         """Sessions pixel-agents watches itself: this machine's default profile."""
@@ -189,7 +221,10 @@ class Bridge:
         live = self.sessions()
         if not srv or live is None:
             return
-        base, token = srv
+        base, token, _pid = srv
+        if srv != self.server_id:  # a restarted server knows none of our sessions: replay them all
+            self.known.clear()
+            self.server_id = srv
         now = time.time() * 1000
         live = [s for s in live if not (s.get("status") == "idle" and now - (s.get("status_since") or now) > PARK_MS)]
         # labels: the session's name, made unique across machines
@@ -209,8 +244,13 @@ class Bridge:
                 mappings[label] = [host]
             s["_label"] = label
         if mappings != self.mappings:
-            update_settings(areaMappings=mappings, watchAllSessions=True, alwaysShowLabels=True)
-            self.mappings = mappings
+            try:
+                update_settings(area_mappings=mappings, watchAllSessions=True, alwaysShowLabels=True)
+                self.mappings = mappings
+            except UnreadableConfig as e:  # leave the file alone; characters still move, seats may be unassigned
+                if str(e) != self.cfg_err:
+                    print(f"[wd agent] pixel bridge: not touching settings: {e}", file=sys.stderr)
+                    self.cfg_err = str(e)
         seen = set()
         for s in live:
             if self.native(s) or not s["_label"]:
@@ -222,30 +262,31 @@ class Bridge:
             k = self.known.get(key)
             ev = lambda name, **kw: post_hook(base, token, {"session_id": sid, "hook_event_name": name, "cwd": cwd, **kw})  # noqa: E731
             if not k or k["sid"] != sid:
-                if not ev("SessionStart", source="startup", transcript_path=""):
+                if not (ev("SessionStart", source="startup", transcript_path="") and ev("Stop")):
                     continue
-                ev("Stop")
                 k = self.known[key] = {"sid": sid, "status": "idle", "activity": "", "tool": ""}
             status, act = s.get("status"), s.get("activity") or ""
             if status == k["status"] and (status != "busy" or act == k["activity"]):
                 continue
+            # the cached state only moves once the server took every event; otherwise retry next step
             if k["tool"]:
-                ev("PostToolUse", tool_name=TOOL_FOR.get(k["activity"], "Tool"), tool_use_id=k["tool"], tool_input={})
+                if not ev("PostToolUse", tool_name=TOOL_FOR.get(k["activity"], "Tool"), tool_use_id=k["tool"], tool_input={}):
+                    continue
                 k["tool"] = ""
-            if status == "busy":
-                k["tool"] = f"wd-{uuid.uuid4().hex[:10]}"
-                ev("PreToolUse", tool_name=TOOL_FOR.get(act, "Tool"), tool_use_id=k["tool"], tool_input={})
-            elif status == "waiting":  # pixel-agents flags permission on the running tool, so start one first
-                k["tool"] = f"wd-{uuid.uuid4().hex[:10]}"
-                ev("PreToolUse", tool_name=TOOL_FOR.get(act, "Tool"), tool_use_id=k["tool"], tool_input={})
-                ev("Notification", notification_type="permission_prompt", message="waiting for you")
-            else:
-                ev("Stop")
+            if status in ("busy", "waiting"):  # pixel-agents flags permission on the running tool, so start one first
+                tool = f"wd-{uuid.uuid4().hex[:10]}"
+                if not ev("PreToolUse", tool_name=TOOL_FOR.get(act, "Tool"), tool_use_id=tool, tool_input={}):
+                    continue
+                k["tool"] = tool
+                if status == "waiting" and not ev("Notification", notification_type="permission_prompt", message="waiting for you"):
+                    continue
+            elif not ev("Stop"):
+                continue
             k["status"], k["activity"] = status, act
         for key in [k for k in self.known if k not in seen]:
-            post_hook(base, token, {"session_id": self.known[key]["sid"], "hook_event_name": "SessionEnd", "reason": "other",
-                                    "cwd": "/wd"})
-            del self.known[key]
+            if post_hook(base, token, {"session_id": self.known[key]["sid"], "hook_event_name": "SessionEnd", "reason": "other",
+                                       "cwd": "/wd"}):
+                del self.known[key]  # kept on failure, so the end is sent again
 
 
 def run_bridge(cfg: cfgmod.Config, every_s: float = 5.0, stop=None) -> None:
@@ -262,33 +303,34 @@ def run_bridge(cfg: cfgmod.Config, every_s: float = 5.0, stop=None) -> None:
 
 
 # ---- setup ---------------------------------------------------------------------------
-PLIST = """<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>io.github.workdash.pixel</string>
-  <key>ProgramArguments</key><array>
-    <string>{node}</string><string>{cli}</string>
-    <string>--host</string><string>127.0.0.1</string><string>--port</string><string>{port}</string><string>--no-terminal</string>
-  </array>
-  <key>WorkingDirectory</key><string>{workdir}</string>
-  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
-  <key>Nice</key><integer>10</integer>
-  <key>StandardOutPath</key><string>{log}</string><key>StandardErrorPath</key><string>{log}</string>
-</dict></plist>
-"""
+def plist_for(node: str, cli: str, port: int, workdir: Path) -> bytes:
+    return plistlib.dumps({
+        "Label": "io.github.workdash.pixel",
+        "ProgramArguments": [node, cli, "--host", "127.0.0.1", "--port", str(port), "--no-terminal"],
+        "WorkingDirectory": str(workdir), "RunAtLoad": True, "KeepAlive": True, "Nice": 10,
+        "StandardOutPath": str(workdir / "pixel.log"), "StandardErrorPath": str(workdir / "pixel.log"),
+    })
 
 
-def setup(cfg: cfgmod.Config, hosts: list[str], cli: str, node: str, port: int = 3100) -> list[str]:
+def setup(cfg: cfgmod.Config, hosts: list[str], cli: str, node: str, port: int = 3100, replace_layout: bool = False) -> list[str]:
     done = []
     HOME.mkdir(parents=True, exist_ok=True)
-    _write_json(HOME / "layout.json", make_layout(hosts))
-    done.append(f"layout: one room per machine ({', '.join(hosts)}) -> {HOME / 'layout.json'}")
+    lp = HOME / "layout.json"
+    if lp.exists() and not replace_layout:
+        done.append(f"layout: kept your existing {lp} (pass --replace-layout to rebuild it; the old one is backed up)")
+    else:
+        if lp.exists():
+            backup = lp.with_name(f"layout.{time.strftime('%Y%m%d-%H%M%S')}.json")
+            os.replace(lp, backup)
+            done.append(f"layout: previous one saved as {backup.name}")
+        _write_json(lp, make_layout(hosts))
+        done.append(f"layout: one room per machine ({', '.join(hosts)}) -> {lp}")
     update_settings(watchAllSessions=True, alwaysShowLabels=True, showAreas=True, soundEnabled=False, hooksInfoShown=True)
     done.append("settings: Watch All Sessions on, labels always shown, sound off")
     if sys.platform == "darwin":
         workdir = cfg.home / "pixel"
         workdir.mkdir(parents=True, exist_ok=True)
         plist = Path.home() / "Library/LaunchAgents/io.github.workdash.pixel.plist"
-        plist.write_text(PLIST.format(node=node, cli=cli, port=port, workdir=workdir, log=workdir / "pixel.log"))
+        plist.write_bytes(plist_for(node, cli, port, workdir))
         done.append(f"launchd job: {plist} (load with: launchctl bootstrap gui/$(id -u) {plist})")
     return done

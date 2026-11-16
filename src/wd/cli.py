@@ -125,6 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
     pxs.add_argument("--cli", required=True, help="path to pixel-agents' dist/cli.js (npm install pixel-agents)")
     pxs.add_argument("--node", default="", help="node binary (default: the one on PATH)")
     pxs.add_argument("--port", type=int, default=3100)
+    pxs.add_argument("--replace-layout", action="store_true", help="rebuild layout.json even if one exists (the old one is backed up)")
     rs = sub.add_parser("research", help="research records (研究 view)").add_subparsers(dest="sub", required=True)
     rp = rs.add_parser("propose", parents=[common], help="let Claude draft questions + links (runs on the hub, realm's own account)")
     rp.add_argument("name", help="[[hub.research]] name")
@@ -136,6 +137,14 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--questions-only", action="store_true")
     rp.add_argument("--synth-model", default="", help="model for the structure/claims/report stages (default: --model)")
     rp.add_argument("--stages", default="all", help="comma list of records,structure,claims,report (default: all)")
+    rr = rs.add_parser("reconstruct", parents=[common],
+                       help="rebuild records from a project's own write-ups (for projects that never pre-registered)")
+    rr.add_argument("name", help="[[hub.research]] name (format = \"reconstructed\"; records are written into its path)")
+    rr.add_argument("--doc", action="append", required=True, help="Markdown write-up to read, one section at a time (repeatable)")
+    rr.add_argument("--git", help="repository whose commit subjects date the rounds")
+    rr.add_argument("--model", default="sonnet")
+    rr.add_argument("--workers", type=int, default=4, help="sections read in parallel")
+    rr.add_argument("--profile", help="profile label whose Claude account to use (default: this hub's realm)")
 
     # experiments ------------------------------------------------------------
     e = sub.add_parser("exp", help="experiments").add_subparsers(dest="sub", required=True)
@@ -253,10 +262,15 @@ def dispatch(cfg: cfgmod.Config, args) -> int:
         from wd import pixel
 
         node = args.node or shutil.which("node") or "node"
-        for line in pixel.setup(cfg, [h.strip() for h in args.hosts.split(",") if h.strip()], str(Path(args.cli).expanduser().resolve()), node, args.port):
+        for line in pixel.setup(cfg, [h.strip() for h in args.hosts.split(",") if h.strip()], str(Path(args.cli).expanduser().resolve()), node, args.port, args.replace_layout):
             print("✓", line)
         print("then set [view] pixel = true in your config and restart the agent")
         return 0
+
+    if args.cmd == "research" and args.sub == "reconstruct":
+        from wd import research_reconstruct
+
+        return research_reconstruct.main(cfg, args.name, args.doc, args.git, args.model, args.profile, args.workers)
 
     if args.cmd == "research" and args.sub == "propose":
         from wd import research_propose

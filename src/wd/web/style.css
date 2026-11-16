@@ -658,6 +658,7 @@ table.etable .lv { font-size: .74rem; color: var(--muted); } table.etable .n { f
 table.etable tr { cursor: pointer; } table.etable tbody tr:hover td { background: var(--panel-2); }
 details.cards { margin-top: .8rem; } details.cards > summary { cursor: pointer; font-size: .84rem; color: var(--muted); padding: .3rem 0; }
 .rorig { margin: -.2rem 0 .35rem; font-size: .72rem; color: var(--muted); }
+.rsrc { margin: .35rem 0 0; font-size: .72rem; color: var(--muted); display: flex; flex-wrap: wrap; gap: .3rem .6rem; align-items: baseline; }
 .mdoc { background: var(--panel); border: var(--border); border-radius: var(--radius); padding: 1.2rem 1.6rem; max-width: 920px; line-height: 1.65; }
 .mdoc section { margin-top: 1.2rem; } .mdoc h2 { margin: 0; font-family: var(--font-title); }
 .mdoc h3 { font-size: 1.05rem; margin: 0 0 .5rem; padding-bottom: .25rem; border-bottom: 1px solid var(--line); }

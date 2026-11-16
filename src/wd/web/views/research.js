@@ -10,13 +10,30 @@ import { WD, esc, lsGet, lsSet } from "../core.js";
 
 const OUT = { follows: "承接", because: "因為", readjudicates: "重新裁定", supersedes: "取代", corrects: "更正", uses: "用到" };
 const IN = { follows: "後續", because: "引出", readjudicates: "被重新裁定", supersedes: "被取代", corrects: "被更正", uses: "被用到" };
-const OUTCOME = {
+const OUTCOME_REG = {
   pass: ["✓", "通過"], fail: ["✗", "不通過"], inconclusive: ["?", "未定"], void: ["⌀", "作廢"],
   running: ["●", "進行中"], open: ["○", "已登記"], other: ["·", "其他"],
 };
+// records rebuilt afterwards from write-ups: no threshold was set in advance,
+// so the verdict only says whether the change beat what it was compared with
+const OUTCOME_REC = {
+  pass: ["✓", "有改善"], fail: ["✗", "沒改善"], inconclusive: ["?", "看不出來"], void: ["⌀", "作廢"],
+  running: ["●", "進行中"], open: ["○", "已記下"], other: ["·", "其他"],
+};
 const MODES = [["now", "現況"], ["topic", "途徑"], ["map", "歷程"], ["time", "時間線"], ["cited", "被引用"], ["report", "報告"]];
 const STUCK = { method: "方法還不可信", measure: "在等量測", external: "等外部決定或資料", not_started: "還沒開始", closed: "已結案", none: "" };
-const LEVEL = ["看不出來", "只有想法", "模擬對模擬", "對公開實測", "對自有／供應方實測", "目標條件實測確認"];
+const DEFAULT_LADDER = ["只有想法", "模擬對模擬", "對公開實測", "對自有或供應方實測", "目標條件下實測確認"];
+// per-project vocabulary, set from the data before each render (vocab)
+let OUTCOME = OUTCOME_REG, LEVEL = ["看不出來", ...DEFAULT_LADDER], W = "登記", UNIT = "個材料";
+function vocab(d) {
+  const lad = Array.isArray(d?.ladder) && d.ladder.length === 5 ? d.ladder.map(String) : DEFAULT_LADDER;
+  LEVEL = ["看不出來", ...lad];
+  OUTCOME = d?.reconstructed ? OUTCOME_REC : OUTCOME_REG;
+  W = d?.reconstructed ? "紀錄" : "登記";
+  UNIT = String(d?.unit || "個材料");
+}
+const ladderText = () => LEVEL.slice(1).map((x, i) => `${"①②③④⑤"[i]}${x}`).join(" ");
+const passWords = () => (W === "紀錄" ? ["有改善的", "試過、沒改善"] : ["有通過的", "試過、沒通過"]);
 const STATE = { supported: "大致成立", refuted: "大致不成立", mixed: "有成有敗", open: "還沒有答案" };
 const KIND = { route: "途徑", question: "問題", cross: "方法" };
 const bare = (title, kind) => (kind === "route" ? String(title).replace(/^(候選)?途徑[:：]\s*/, "") : title);
@@ -83,6 +100,7 @@ function derive(d) {
     title: id ? (qs.get(id)?.title || id) : (qs.size ? "還沒歸到問題" : "沒有代號"),
     q: qs.get(id) || null,
   })).sort((a, b) => (a.id === "") - (b.id === "") || b.last.localeCompare(a.last));
+  for (const q of d.questions || []) if (!groups.has(q.id)) glist.push({ id: q.id, rs: [], last: "", title: q.title || q.id, q });
   const times = d.records.map((r) => Date.parse(r.ts)).filter((t) => !Number.isNaN(t));
   const span = times.length ? [dayStart(Math.min(...times)), dayStart(Math.max(...times)) + DAY] : [0, 1];
   const gmap = new Map(glist.map((g) => [g.id, g]));
@@ -152,10 +170,12 @@ function rcard(r, D) {
     <h3 class="rtitle">${esc(r.name || r.title)}</h3>${r.name ? `<p class="rorig">${esc(r.title)}</p>` : ""}
     <dl>
       ${why ? `<dt>為什麼</dt>${more(why, r.why_short ? "" : "why")}` : ""}
-      ${hyp ? `<dt>假設</dt>${more(hyp, "hypothesis")}` : ""}
+      ${r.source && r.hypothesis ? `<dt>改了什麼</dt>${more(r.hypothesis, "hypothesis")}` : hyp ? `<dt>假設</dt>${more(hyp, "hypothesis")}` : ""}
+      ${r.source && r.criterion ? `<dt>怎麼比</dt><dd>${esc(r.criterion)}</dd>` : ""}
       ${r.lose ? `<dt>輸的條件</dt>${more(r.lose, "lose", "muted")}` : ""}
       ${result ? `<dt>結果</dt>${more(result, r.result_short ? "" : "result")}` : ""}
     </dl>
+    ${r.source ? `<p class="rsrc">出處：${esc(r.source)}${(r.checks || []).length ? `<span class="fwarn">整理時：${r.checks.map(esc).join("；")}</span>` : ""}</p>` : ""}
     ${gaugeSvg(r.gauge, r.outcome)}
     ${outs.length || ins.length ? `<div class="rlinks">${outs.map((e) => link(e.to, D, e, "out")).join("")}${ins.map((e) => link(e.from, D, e, "in")).join("")}</div>` : ""}
     ${nCited ? `<p class="cited">被 ${nCited} 筆提到</p>` : ""}
@@ -237,7 +257,7 @@ function threeLines(q, D) {
   if (!body) return "";
   return `<div class="three">${body}
     <p class="tnext">${q.stuck && STUCK[q.stuck] ? `<span class="stuck">卡在：${esc(STUCK[q.stuck])}</span>` : ""}${q.next ? `<span><b>下一步</b>${esc(q.next)}</span>` : ""}${q.decision ? `<span class="dec"><b>待決定</b>${esc(q.decision)}</span>` : ""}</p>
-    <p class="aidraft">AI 整理的草稿：每句都連到登記，請點開核對後再對外使用。</p></div>`;
+    <p class="aidraft">AI 整理的草稿：每句都連到${W}，請點開核對後再對外使用。</p></div>`;
 }
 const ROLE = { supports: "支持", against: "反對", limits: "限制" };
 function findingCard(f, D) {
@@ -255,13 +275,13 @@ function ladder(rs) {
   const cells = [1, 2, 3, 4, 5].map((lv) => {
     const at = rs.filter((r) => (r.level || 0) === lv);
     const st = at.some((r) => r.outcome === "pass") ? "pass" : at.length ? "tried" : "none";
-    return `<i class="lad l-${st}" title="${esc(`${LEVEL[lv]}：${st === "pass" ? "有通過的" : st === "tried" ? "試過、沒通過" : "沒試過"}（${at.length} 筆）`)}"></i>`;
+    return `<i class="lad l-${st}" title="${esc(`${LEVEL[lv]}：${st === "pass" ? passWords()[0] : st === "tried" ? passWords()[1] : "沒試過"}（${at.length} 筆）`)}"></i>`;
   }).join("");
   return `<span class="ladder" aria-label="證據階梯">${cells}</span>`;
 }
 function evidenceTable(rs, D) {
   if (!rs.length) return "";
-  return `<table class="etable"><thead><tr><th>日期</th><th>在問什麼</th><th>跟什麼比</th><th>n</th><th>登記判定</th></tr></thead><tbody>${rs.slice().reverse().map((r) => `
+  return `<table class="etable"><thead><tr><th>日期</th><th>在問什麼</th><th>跟什麼比</th><th>n</th><th>${W === "紀錄" ? "判定" : "登記判定"}</th></tr></thead><tbody>${rs.slice().reverse().map((r) => `
     <tr data-rid="${esc(r.id)}" tabindex="0"><td class="d">${esc(day(r.ts))}</td><td>${esc(nameOf(r))}${r.result_short ? `<div class="v">${esc(r.result_short)}</div>` : ""}</td>
     <td class="lv">${esc(LEVEL[r.level || 0])}</td><td class="n">${r.n || "—"}</td><td>${badge(r.outcome)}</td></tr>`).join("")}</tbody></table>`;
 }
@@ -287,12 +307,12 @@ function statusBoard(d, D) {
     }).join("");
     return `<section class="goal${g.id === "g-cross" ? " cross" : ""}"><header><h2>${esc(g.title)}</h2>
       ${g.bar ? `<p class="bar"><b>怎樣算成功</b>${esc(g.bar)}</p>` : ""}${g.answer ? `<p class="bar"><b>現在的答案</b>${esc(g.answer)} ${citeChips(g.answer_cites, D)}</p>` : ""}</header>
-      <table class="sboard"><thead><tr><th>途徑／問題</th><th>現在的答案</th><th title="①只有想法 ②模擬對模擬 ③對公開實測 ④對自有／供應方實測 ⑤目標條件實測確認">證據階梯</th><th>卡在哪</th><th>最近結果</th><th>下一步</th></tr></thead><tbody>${rows}</tbody></table></section>`;
+      <table class="sboard"><thead><tr><th>途徑／問題</th><th>現在的答案</th><th title="${esc(ladderText())}">證據階梯</th><th>卡在哪</th><th>最近結果</th><th>下一步</th></tr></thead><tbody>${rows}</tbody></table></section>`;
   }).join("");
   const cutoff = d.records.length ? d.records[d.records.length - 1].ts.slice(0, 10) : "";
   return `<div class="nowgrid"><div>${blocks}</div><aside class="side">
     <section><h3>待決定</h3>${decisions.length ? `<ul>${decisions.map((x) => `<li><b>${esc(bare(x.q, "route"))}</b>${esc(x.text)}</li>`).join("")}</ul>` : `<p class="muted">目前沒有列出待決事項。</p>`}</section>
-    <section><h3>怎麼讀</h3><p class="muted">證據階梯五格：①只有想法 ②模擬對模擬 ③對公開實測 ④對自有／供應方實測 ⑤目標條件實測確認。實心＝有通過的，空心框＝試過沒過，淡＝沒試。「最近結果」超過 14 天變灰。資料到 ${esc(cutoff)}。</p></section>
+    <section><h3>怎麼讀</h3><p class="muted">證據階梯五格：${esc(ladderText())}。實心＝${passWords()[0]}，空心框＝${passWords()[1]}，淡＝沒試。「最近結果」超過 14 天變灰。資料到 ${esc(cutoff)}。</p></section>
   </aside></div>`;
 }
 
@@ -305,7 +325,7 @@ function topic(d, D) {
       ${dots(x.rs)}<span class="glast">${esc(day(x.last))}</span>
     </button>`;
   const list = D.goals.length
-    ? D.goals.map((gl) => `<p class="gsub">${esc(gl.title)}</p>${gl.qs.filter((x) => x.rs.length).map(item).join("")}`).join("") +
+    ? D.goals.map((gl) => `<p class="gsub">${esc(gl.title)}</p>${gl.qs.map(item).join("")}`).join("") +
       (D.loose.length ? `<p class="gsub">還沒歸類</p>${D.loose.map(item).join("")}` : "")
     : D.groups.map(item).join("");
   const q = g?.q;
@@ -322,7 +342,7 @@ function topic(d, D) {
       <h3 class="sub">證據（${(g?.rs || []).length} 筆）<span class="rcounts">${counts(g?.rs || [])}</span></h3>
       ${evidenceTable(g?.rs || [], D)}
       ${synthesis(g?.rs || [], D)}
-      <details class="cards"${ui.focus ? " open" : ""}><summary>逐筆詳細（假設、輸的條件、結果原文）</summary><div class="timeline">${(g?.rs || []).map((r) => rcard(r, D)).join("")}</div></details>
+      <details class="cards"${ui.focus ? " open" : ""}><summary>逐筆詳細（${W === "紀錄" ? "改了什麼、怎麼比、出處" : "假設、輸的條件、結果原文"}）</summary><div class="timeline">${(g?.rs || []).map((r) => rcard(r, D)).join("")}</div></details>
     </section>
   </div>`;
 }
@@ -382,7 +402,7 @@ function overview(d, D) {
       <div class="lanes">${axis(D)}${g.qs.map((x) => lane(x, D)).join("")}</div>
     </section>`).join("");
   const loose = D.loose.length ? `<section class="goal"><header><h2>還沒歸類</h2></header><div class="lanes">${axis(D)}${D.loose.map((x) => lane(x, D)).join("")}</div></section>` : "";
-  return `<p class="muted legend-o">${Object.entries(OUTCOME).filter(([k]) => k !== "other").map(([k, [i, t]]) => `<span class="ob o-${k}"><i>${i}</i>${t}</span>`).join(" ")}　每個點是一筆登記，橫軸是時間；點一下看那筆，點標題看整條故事線。</p>${blocks}${loose}`;
+  return `<p class="muted legend-o">${Object.entries(OUTCOME).filter(([k]) => k !== "other").map(([k, [i, t]]) => `<span class="ob o-${k}"><i>${i}</i>${t}</span>`).join(" ")}　每個點是一筆${W}，橫軸是時間；點一下看那筆，點標題看整條故事線。</p>${blocks}${loose}`;
 }
 
 // A Markdown report built from the same data: goal -> direction -> answer and
@@ -391,11 +411,11 @@ function reportMd(d, D, label) {
   const today = new Date().toISOString().slice(0, 10);
   const cnt = (rs) => ["pass", "fail", "inconclusive", "running", "open", "void"].map((o) => [o, rs.filter((r) => r.outcome === o).length]).filter(([, n]) => n).map(([o, n]) => `${OUTCOME[o][1]} ${n}`).join("、");
   const line = (r) => `  - ${r.ts.slice(0, 10)} ${r.code ? `**${r.code}** ` : ""}${r.title}（${OUTCOME[r.outcome]?.[1] || r.outcome}，${r.id}）\n    - 為什麼：${r.why_short || r.why || r.hypothesis}\n    - 結果：${r.result_short || [r.verdict, r.result].filter(Boolean).join("：") || "—"}`;
-  const out = [`# ${label}：研究進度`, "", `${today} 產生。共 ${d.records.length} 筆登記（${cnt(d.records)}）。每一句都附登記編號，可回查原始記錄。`, ""];
+  const out = [`# ${label}：研究進度`, "", `${today} 產生。共 ${d.records.length} 筆${W}（${cnt(d.records)}）。每一句都附${W}編號，可回查原始記錄。`, ""];
   const block = (title, rs, q) => {
     out.push(`### ${title}`, "");
     if (q?.answer) out.push(`- **目前答案**（${STATE[q.state] || q.state || "—"}）：${q.answer}`);
-    out.push(`- 登記：${rs.length} 筆（${cnt(rs) || "—"}）`);
+    out.push(`- ${W}：${rs.length} 筆（${cnt(rs) || "—"}）`);
     const recent = rs.slice(-5);
     if (recent.length) { out.push(`- 最近 ${recent.length} 筆：`); recent.forEach((r) => out.push(line(r))); }
     out.push("");
@@ -426,7 +446,8 @@ function meeting(rep, d, D) {
   const stale = rep.fingerprint && d.records_fp && rep.fingerprint !== d.records_fp;
   html.push(`<header class="mhead"><h2>${esc(rep.title || "研究進度")}</h2><p class="muted">資料截止 ${esc(rep.cutoff || "")}・${esc(rep.status === "draft" ? "草稿，研究者確認前不要對外" : rep.status || "")}${stale ? "・之後有新的登記，這份還沒更新" : ""}</p></header>`);
   md.push(`# ${rep.title || "研究進度"}`, "", `資料截止 ${rep.cutoff || ""}。${rep.status === "draft" ? "草稿，研究者確認前不要對外。" : ""}`, "");
-  // hand corrections made after generation (who checked it, what changed); a rerun replaces the whole file
+  if ((rep.warnings || []).length) html.push(`<p class="fwarn">⚠ 整份檢查：${rep.warnings.map(esc).join("；")}</p>`);
+  // hand corrections made after generation (who checked it, what changed); a rerun keeps a reviewed report
   for (const r of Array.isArray(rep.reviews) ? rep.reviews : []) {
     html.push(`<p class="mreview">核對紀錄 ${esc(r.at || "")}・${esc(r.by || "")}：${esc(r.note || "")}</p>`);
     md.push(`> 核對紀錄 ${r.at || ""}・${r.by || ""}：${r.note || ""}`, "");
@@ -449,12 +470,12 @@ function meeting(rep, d, D) {
     md.push("## 4　還不知道、可能翻盤的", "", ...rep.unknowns.map((x) => `- **${x.item}**${supMd(x.cites)}：什麼結果會改變結論——${x.change_if}`), "");
   }
   if ((rep.decisions || []).length) {
-    html.push(`<section><h3>5　需要決定的事</h3><table class="mtable"><thead><tr><th>決定什麼</th><th>選項與代價</th><th>建議</th><th>誰</th><th>何時前</th></tr></thead><tbody>${rep.decisions.map((x) => `<tr><td>${esc(x.decision)}</td><td>${esc(x.options)}</td><td>${esc(x.recommendation)}${x.basis ? `<br><span class="muted">依據：${esc(x.basis)}</span>` : ""}</td><td>${esc(x.who)}</td><td>${esc(x.by_when)}</td></tr>`).join("")}</tbody></table></section>`);
+    html.push(`<section><h3>5　需要決定的事</h3><table class="mtable"><thead><tr><th>決定什麼</th><th>選項與代價</th><th>建議</th><th>誰</th><th>何時前</th></tr></thead><tbody>${rep.decisions.map((x) => `<tr><td>${esc(x.decision)}${sup(x.cites)}${(x.warnings || []).length ? `<br><span class="fwarn">⚠ ${x.warnings.map(esc).join("；")}</span>` : ""}</td><td>${esc(x.options)}</td><td>${esc(x.recommendation)}${x.basis ? `<br><span class="muted">依據：${esc(x.basis)}</span>` : ""}</td><td>${esc(x.who)}</td><td>${esc(x.by_when)}</td></tr>`).join("")}</tbody></table></section>`);
     md.push("## 5　需要決定的事", "", "| 決定什麼 | 選項與代價 | 建議 | 誰 | 何時前 |", "|---|---|---|---|---|", ...rep.decisions.map((x) => `| ${x.decision} | ${x.options} | ${x.recommendation}${x.basis ? `（依據：${x.basis}）` : ""} | ${x.who} | ${x.by_when} |`), "");
   }
   // questions that look open but were already settled (pre-registered rules, earlier re-adjudications)
   if ((rep.settled || []).length) {
-    html.push(`<section><h3>已經定了、不必上會的</h3><ul>${rep.settled.map((x) => `<li><b>${esc(x.item)}</b>：${esc(x.decided)}${x.basis ? `<br><span class="muted">依據：${esc(x.basis)}</span>` : ""}</li>`).join("")}</ul></section>`);
+    html.push(`<section><h3>已經定了、不必上會的</h3><ul>${rep.settled.map((x) => `<li><b>${esc(x.item)}</b>：${esc(x.decided)}${sup(x.cites)}${x.basis ? `<br><span class="muted">依據：${esc(x.basis)}</span>` : ""}</li>`).join("")}</ul></section>`);
     md.push("## 已經定了、不必上會的", "", ...rep.settled.map((x) => `- **${x.item}**：${x.decided}${x.basis ? `（依據：${x.basis}）` : ""}`), "");
   }
   if ((rep.next_weeks || []).length) {
@@ -462,10 +483,10 @@ function meeting(rep, d, D) {
     md.push("## 6　接下來四週", "", ...rep.next_weeks.map((x) => `- **${x.task}**：做完會知道 ${x.learn}`), "");
   }
   const appendix = notes.map((id, k) => { const r = D.byId.get(id); return { n: k + 1, r }; });
-  html.push(`<section class="appendix"><h3>附錄 A　出處</h3><table class="mtable"><thead><tr><th>註</th><th>日期</th><th>在問什麼</th><th>登記判定</th><th>證據層級</th><th>登記編號</th></tr></thead><tbody>${appendix.map(({ n, r }) => `<tr data-rid="${esc(r.id)}"><td>[${n}]</td><td>${esc(r.ts.slice(0, 10))}</td><td>${esc(nameOf(r))}</td><td>${badge(r.outcome)}</td><td>${esc(LEVEL[r.level || 0])}${r.n ? `，${r.n} 個材料` : ""}</td><td class="rid">${esc(r.id)}</td></tr>`).join("")}</tbody></table>
+  html.push(`<section class="appendix"><h3>附錄 A　出處</h3><table class="mtable"><thead><tr><th>註</th><th>日期</th><th>在問什麼</th><th>${W === "紀錄" ? "判定" : "登記判定"}</th><th>證據層級</th><th>${W}編號</th></tr></thead><tbody>${appendix.map(({ n, r }) => `<tr data-rid="${esc(r.id)}"><td>[${n}]</td><td>${esc(r.ts.slice(0, 10))}</td><td>${esc(nameOf(r))}</td><td>${badge(r.outcome)}</td><td>${esc(LEVEL[r.level || 0])}${r.n ? `，${r.n} ${UNIT}` : ""}</td><td class="rid">${esc(r.id)}</td></tr>`).join("")}</tbody></table>
     ${(rep.glossary || []).length ? `<h3>附錄 B　名詞</h3><dl class="mdl">${rep.glossary.map((x) => `<dt>${esc(x.term)}</dt><dd>${esc(x.plain)}</dd>`).join("")}</dl>` : ""}</section>`);
-  md.push("## 附錄 A　出處", "", "| 註 | 日期 | 在問什麼 | 登記判定 | 證據層級 | 登記編號 |", "|---|---|---|---|---|---|",
-    ...appendix.map(({ n, r }) => `| [${n}] | ${r.ts.slice(0, 10)} | ${nameOf(r)} | ${(OUTCOME[r.outcome] || OUTCOME.other)[1]} | ${LEVEL[r.level || 0]}${r.n ? `，${r.n} 個材料` : ""} | ${r.id} |`), "");
+  md.push("## 附錄 A　出處", "", `| 註 | 日期 | 在問什麼 | ${W === "紀錄" ? "判定" : "登記判定"} | 證據層級 | ${W}編號 |`, "|---|---|---|---|---|---|",
+    ...appendix.map(({ n, r }) => `| [${n}] | ${r.ts.slice(0, 10)} | ${nameOf(r)} | ${(OUTCOME[r.outcome] || OUTCOME.other)[1]} | ${LEVEL[r.level || 0]}${r.n ? `，${r.n} ${UNIT}` : ""} | ${r.id} |`), "");
   if ((rep.glossary || []).length) md.push("## 附錄 B　名詞", "", ...rep.glossary.map((x) => `- **${x.term}**：${x.plain}`), "");
   return { html: html.join(""), md: md.join("\n") };
 }
@@ -474,7 +495,7 @@ function reportView(d, D, label) {
   const rep = d.report;
   const list = reportMd(d, D, label);
   if (!rep || ui.reportList) {
-    return `<div class="rreport"><p class="muted">${rep ? "證據清單：依目標與方向列出每筆登記，給研究者核對用。" : "還沒有會議版報告。在 hub 上執行 <code>wd research propose &lt;name&gt; --stages claims,report</code> 產生。下面是證據清單。"}</p>
+    return `<div class="rreport"><p class="muted">${rep ? `證據清單：依目標與方向列出每筆${W}，給研究者核對用。` : "還沒有會議版報告。在 hub 上執行 <code>wd research propose &lt;name&gt; --stages claims,report</code> 產生。下面是證據清單。"}</p>
       <div class="rrbar">${rep ? `<button type="button" data-rlist="0">回會議版</button>` : ""}<button type="button" id="rrcopy">複製 Markdown</button><button type="button" id="rrsave">下載 .md</button></div>
       <pre id="rrmd">${esc(list)}</pre></div>`;
   }
@@ -525,13 +546,15 @@ function render(el, m) {
   ui.proj = keyOf(p);
   const c = load(p);
   const d = c.data;
+  vocab(d);
   const head = `
   <div class="rbar">
     ${projects.length > 1 ? `<select id="rproj">${projects.map((x) => `<option value="${esc(keyOf(x))}"${x === p ? " selected" : ""}>${esc(x.label)}</option>`).join("")}</select>` : `<h2 class="rproj">${esc(p.label)}</h2>`}
-    <span class="muted">${p.count} 筆登記${d ? ` · ${counts(d.records)}` : ""}</span>
+    <span class="muted">${p.count} 筆${W}${d ? ` · ${counts(d.records)}` : ""}</span>
     <div class="rmodes" role="tablist">${MODES.map(([id, label]) => `<button role="tab" data-mode="${id}" aria-selected="${ui.mode === id}">${label}</button>`).join("")}</div>
   </div>
   ${sessionsFor(p, m)}
+  ${d?.reconstructed ? `<p class="hint">這些紀錄是事後從專案文件整理的，不是事先登記：沒有事先定的門檻，判定是整理時讀出的「比對照好、沒改善或看不出來」。每筆都附出處，引句對不上的欄位已被程式拿掉。</p>` : ""}
   ${d && !d.questions?.length ? `<p class="hint">目前依代號分組，關係只含記錄裡寫明的 REG 編號。等 AI 讀完內文、補上「問題」和關係之後，這裡會改成依問題分組。</p>` : ""}
   ${d?.errors?.length ? `<details class="hint"><summary>${d.errors.length} 筆讀不進來</summary>${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</details>` : ""}`;
   if (!d) {
@@ -591,6 +614,8 @@ function wire(el) {
   if (el._rWired || !el.addEventListener) return;
   el._rWired = true;
   const mine = (ev) => ev.target.closest?.("[data-rv]") && el.contains(ev.target);
+  // text inside a closed <details> has no size yet; measure again once it opens
+  el.addEventListener("toggle", (ev) => { if (ev.target.open) markClamped(ev.target); }, true);
   el.addEventListener("change", (ev) => {
     if (!mine(ev) || ev.target.id !== "rproj") return;
     ui.proj = ev.target.value; lsSet("wd.research.proj", ui.proj); rerender();

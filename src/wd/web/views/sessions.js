@@ -301,7 +301,9 @@ WD.register({
     };
     const banner = m.offline.length ? `<p class="banner">暫時連不上 ${m.offline.map((s) => esc(s.state?.realm || s.url.replace(/^https?:\/\//, ""))).join("、")}，自動重試中（換網路後通道約 1 分鐘內會自己接回；一直沒好再執行 <code>wd view</code>）</p>` : "";
     if (WD.look === "office" && opener.pixel) {
-      mountPixel(el, ctx, banner);
+      // pixel-agents draws every realm it is fed; say so instead of pretending to filter
+      const note = WD.realm ? `<p class="hint">辦公室小人一律顯示全部的 session，「個人／工作」篩選在這個風格不適用。</p>` : "";
+      mountPixel(el, { live: m.sessions.filter((s) => s.status !== "gone") }, banner + note);
       return;
     }
     if (WD.look === "office") {

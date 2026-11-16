@@ -32,9 +32,11 @@ from pathlib import Path
 MAX_FILE = 4 * 1024 * 1024
 MAX_FILES = 5000
 MAX_TOTAL = 256 * 1024 * 1024
-RID = re.compile(r"REG-\d{8}-[0-9a-f]{4}")
-# family codes such as ABL-2c, EVAL-GATE-1, E3, S2 (but not REG-... ids)
-CODE = re.compile(r"(?<![A-Za-z0-9])((?!REG-)[A-Z][A-Z0-9]{1,}(?:-[A-Z0-9]+)+[a-z]?|E\d+[a-z]?|S\d)(?![A-Za-z0-9])")
+# REG- = written before the run (pre-registration); REC- = reconstructed afterwards
+# from a project's own write-ups by `wd research reconstruct`.
+RID = re.compile(r"RE[GC]-\d{8}-[0-9a-f]{4}")
+# family codes such as ABL-2c, EVAL-GATE-1, E3, S2 (but not REG-/REC- ids)
+CODE = re.compile(r"(?<![A-Za-z0-9])((?!RE[GC]-)[A-Z][A-Z0-9]{1,}(?:-[A-Z0-9]+)+[a-z]?|E\d+[a-z]?|S\d)(?![A-Za-z0-9])")
 
 # Edge types, newest record -> the older record it points at.
 STRONG = ("follows", "because", "readjudicates", "supersedes", "corrects")
@@ -60,6 +62,12 @@ DEFAULT_FIELDS: dict[str, list[str]] = {
 }
 
 
+# Evidence ladder, weakest to strongest (levels 1-5). The default fits lab
+# science; a project with a different path to "proven" sets its own
+# (`ladder = [...]` in its [[hub.research]] entry).
+DEFAULT_LADDER = ["只有想法", "模擬對模擬", "對公開實測", "對自有或供應方實測", "目標條件下實測確認"]
+
+
 @dataclass
 class ResearchSource:
     name: str
@@ -69,6 +77,14 @@ class ResearchSource:
     overlay: Path | None = None
     fields: dict[str, list[str]] = field(default_factory=dict)
     forbidden: list[str] = field(default_factory=list)  # words reports must not use (the project's own non-claims)
+    ladder: list[str] = field(default_factory=lambda: list(DEFAULT_LADDER))
+    unit: str = "個材料"  # what a record's n counts
+    min_n: int = 8  # below this n a result is "preliminary"
+
+    @property
+    def reconstructed(self) -> bool:
+        """Records written after the fact from the project's write-ups, not before the run."""
+        return self.format == "reconstructed"
 
     def field_names(self, key: str) -> list[str]:
         return self.fields.get(key) or DEFAULT_FIELDS[key]
@@ -235,6 +251,10 @@ def normalise(d: dict, src: ResearchSource) -> dict:
         "gauge": _checked_gauge(gauge(g("criterion"), res, g("noise")), outcome(status, verdict)),
         "edges": edges,
         "mentions": mentions,
+        # reconstructed records: where in the write-up it came from, and what the checks removed
+        "source": (f"{_flat(d['source'].get('doc'), 120)} §{_flat(d['source'].get('section'), 120)}"
+                   if isinstance(d.get("source"), dict) else ""),
+        "checks": [_flat(w, 120) for w in d.get("warnings", []) if isinstance(w, str)][:6] if isinstance(d.get("warnings"), list) else [],
     }
 
 
@@ -257,6 +277,49 @@ def _question(q: dict) -> dict:
         "cites": [{"id": _flat(c.get("id"), 40), "role": _flat(c.get("role"), 10), "quote": _flat(c.get("quote"), 240)}
                   for c in f.get("cites", []) if isinstance(c, dict)][:8],
     } for f in q.get("findings", []) if isinstance(f, dict)][:4]
+    return out
+
+
+def _no_nan(word: str):
+    raise ValueError(f"non-finite number {word} in JSON")
+
+
+def _ids(xs) -> list[str]:
+    return [x for x in xs if isinstance(x, str)][:12] if isinstance(xs, list) else []
+
+
+def _items(xs, keys: tuple[str, ...], n: int = 12, clip: int = 400) -> list[dict]:
+    """A report section as a list of flat dicts with known text keys (+ cites/findings/warnings)."""
+    out = []
+    for x in xs if isinstance(xs, list) else []:
+        if not isinstance(x, dict):
+            continue
+        d = {k: _flat(x.get(k), clip) for k in keys}
+        for k in ("cites", "findings"):
+            d[k] = _ids(x.get(k))
+        d["warnings"] = [_flat(w, 200) for w in x.get("warnings", []) if isinstance(w, str)][:6] if isinstance(x.get("warnings"), list) else []
+        out.append(d)
+    return out[:n]
+
+
+def clean_report(rep) -> dict | None:
+    """A meeting report reduced to the shape the page renders, so a hand edit
+    gone wrong costs a section, not the page."""
+    if not isinstance(rep, dict):
+        return None
+    op = rep.get("one_page") if isinstance(rep.get("one_page"), dict) else {}
+    out = {k: _flat(rep.get(k), 300) for k in ("title", "cutoff", "fingerprint", "generated", "model", "status")}
+    out["one_page"] = {**{k: _flat(op.get(k), 400) for k in ("goal", "success", "answer", "why_hard")},
+                       "numbers": _items(op.get("numbers"), ("text", "confidence"), 5)}
+    out["learned"] = _items(rep.get("learned"), ("headline", "basis", "so_what", "confidence"), 8)
+    out["routes"] = _items(rep.get("routes"), ("question", "plain", "status", "stuck"), 12)
+    out["unknowns"] = _items(rep.get("unknowns"), ("item", "change_if"), 6)
+    out["decisions"] = _items(rep.get("decisions"), ("decision", "options", "recommendation", "basis", "who", "by_when"), 8)
+    out["settled"] = _items(rep.get("settled"), ("item", "decided", "basis"), 8)
+    out["next_weeks"] = _items(rep.get("next_weeks"), ("task", "learn"), 8)
+    out["glossary"] = _items(rep.get("glossary"), ("term", "plain"), 16)
+    out["reviews"] = _items(rep.get("reviews"), ("at", "by", "note"), 10, 1000)
+    out["warnings"] = [_flat(w, 200) for w in rep.get("warnings", []) if isinstance(w, str)][:6] if isinstance(rep.get("warnings"), list) else []
     return out
 
 
@@ -343,7 +406,7 @@ class ResearchProject:
         try:
             if self.overlay_path.stat().st_size > MAX_FILE * 4:
                 raise ValueError("overlay too large")
-            ov = json.loads(self.overlay_path.read_text(encoding="utf-8"))
+            ov = json.loads(self.overlay_path.read_text(encoding="utf-8"), parse_constant=_no_nan)
             goals = [{**{k: _flat(g.get(k), 400) for k in ("id", "title", "bar", "answer", "state")},
                       "answer_cites": [c for c in g.get("answer_cites", []) if isinstance(c, str)][:8]}
                      for g in ov.get("goals", []) if isinstance(g, dict) and g.get("id")]
@@ -370,8 +433,7 @@ class ResearchProject:
         rp = self.overlay_path.with_name(self.overlay_path.stem + ".report.json")
         try:
             if rp.stat().st_size <= MAX_FILE:
-                report = json.loads(rp.read_text(encoding="utf-8"))
-                report = report if isinstance(report, dict) else None
+                report = clean_report(json.loads(rp.read_text(encoding="utf-8"), parse_constant=_no_nan))
         except FileNotFoundError:
             pass
         except Exception as e:
@@ -384,6 +446,10 @@ class ResearchProject:
             "name": self.src.name,
             "label": self.src.label or self.src.name,
             "project_dir": self.src.path.parent.name,
+            "reconstructed": self.src.reconstructed,
+            "ladder": list(self.src.ladder),
+            "unit": self.src.unit,
+            "min_n": self.src.min_n,
             "records": records,
             "goals": goals,
             "questions": questions,

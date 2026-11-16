@@ -123,6 +123,43 @@ path  = "~/projects/proj/registry"  # one JSON object per file
 - **Cost.** The board's state carries only a fingerprint per source. Browsers
   fetch `/api/research?name=…` when that fingerprint changes.
 
+### Projects that never pre-registered
+
+Many projects only have write-ups: an experiment log in Markdown, commit
+messages. `wd research reconstruct` turns those into records the same pipeline
+can use:
+
+```toml
+[[hub.research]]
+name   = "deploy"
+label  = "Deployment trials"
+path   = "~/wd-data/research/deploy-records"   # written by reconstruct, not by the project
+format = "reconstructed"
+ladder = ["idea only", "offline benchmark", "nightly A/B on staging", "user comparison", "confirmed in production"]
+unit   = "questions"   # what a record's n counts
+min_n  = 20            # below this n a result is "preliminary"
+```
+
+```bash
+wd research reconstruct deploy --doc ~/projects/app/docs/trial-log.md --git ~/projects/app
+wd research propose deploy --model sonnet --synth-model opus
+```
+
+- Claude reads one section at a time and proposes one record per round: why,
+  what changed, how it was compared, the result, the effect (better / no
+  difference / worse / mixed / unclear / running) and what was decided.
+- Every field must quote its section. A field whose quote isn't there is
+  dropped, and the record lists what was removed. The effect needs a verified
+  result; the sample size must be a number in the text. The date must appear in
+  the section or in a quoted commit subject; otherwise the first commit naming
+  the round's code is used.
+- Records get `REC-` ids that stay the same across reruns, and the board shows
+  "有改善 / 沒改善 / 看不出來" instead of pass/fail, because there was no
+  threshold set in advance.
+- `ladder` (five steps, weakest first) also works for pre-registered projects.
+  It drives the evidence-ladder column and the confidence wording that the
+  propose stage computes.
+
 ## Security properties
 
 - No HTTP write endpoint exists. The only writes are `ssh <hub> wd rpc`, so
