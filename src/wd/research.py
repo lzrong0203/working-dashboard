@@ -312,7 +312,7 @@ def clean_report(rep) -> dict | None:
     out["one_page"] = {**{k: _flat(op.get(k), 400) for k in ("goal", "success", "answer", "why_hard")},
                        "numbers": _items(op.get("numbers"), ("text", "confidence"), 5)}
     out["learned"] = _items(rep.get("learned"), ("headline", "basis", "so_what", "confidence"), 8)
-    out["routes"] = _items(rep.get("routes"), ("question", "plain", "status", "stuck"), 12)
+    out["routes"] = _items(rep.get("routes"), ("question", "label", "plain", "status", "stuck"), 12)
     out["unknowns"] = _items(rep.get("unknowns"), ("item", "change_if"), 6)
     out["decisions"] = _items(rep.get("decisions"), ("decision", "options", "recommendation", "basis", "who", "by_when"), 8)
     out["settled"] = _items(rep.get("settled"), ("item", "decided", "basis"), 8)

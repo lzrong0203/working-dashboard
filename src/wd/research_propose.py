@@ -634,13 +634,20 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
                                           "so_what": _flat(x.get("so_what"), 200), "findings": fids, "cites": cites, "confidence": conf,
                                           "warnings": checks(text, [{"id": c, "role": "supports"} for c in cites], enriched, raw_text, forbidden, "紀錄" if src.reconstructed else "登記")
                                           + ([] if fids else ["沒有對應的結論，不應放進報告"])})
-            def qmatch(v):  # the model may answer with a title instead of an id
+            def qmatch(v):  # the model may answer with a title, or a paraphrase of one, instead of an id
                 v = str(v or "")
+                if not v:
+                    return ""
                 for q in overlay["questions"]:
-                    if v == q["id"] or (v and (v in q["title"] or q["title"] in v)):
+                    if v == q["id"] or v in q["title"] or q["title"] in v:
                         return q["id"]
+                chars = lambda t: set(_PUNCT.sub("", t))  # noqa: E731
+                best = max(overlay["questions"], key=lambda q: len(chars(v) & chars(q["title"])) / (len(chars(v) | chars(q["title"])) or 1), default=None)
+                if best and len(chars(v) & chars(best["title"])) / (len(chars(v) | chars(best["title"])) or 1) >= 0.5:
+                    return best["id"]
                 return ""
-            report["routes"] = [{"question": qmatch(x.get("question")), **{k: _flat(x.get(k), 160) for k in ("plain", "status", "stuck")}}
+            report["routes"] = [{"question": qmatch(x.get("question")), "label": _flat(strip_codes(x.get("question")), 80),
+                                 **{k: _flat(x.get(k), 160) for k in ("plain", "status", "stuck")}}
                                 for x in md.get("routes", []) if isinstance(x, dict)][:8]
             for x in md.get("unknowns", [])[:3]:
                 fids, cites, _ = from_findings(x.get("findings", []))

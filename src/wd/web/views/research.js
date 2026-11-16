@@ -462,9 +462,9 @@ function meeting(rep, d, D) {
   (rep.learned || []).forEach((x, k) => md.push(`### ${k + 1}．${x.headline}${supMd(x.cites)}`, "", `- 憑什麼：${x.basis}`, `- 把握：${x.confidence}`, `- 所以：${x.so_what}`, ""));
   html.push(`<section><h3>3　路線現況</h3><table class="mtable"><thead><tr><th>路線</th><th>白話</th><th>現況</th><th>卡在哪</th><th>證據階梯</th></tr></thead><tbody>${(rep.routes || []).map((x) => {
     const qq = q(x.question), g = D.groups.find((y) => y.id === x.question);
-    return `<tr data-group="${esc(x.question)}"><td>${esc(bare(qq?.title || x.question, qq?.kind))}</td><td>${esc(x.plain)}</td><td>${esc(x.status)}</td><td>${esc(x.stuck)}</td><td>${g ? ladder(g.rs) : ""}</td></tr>`;
+    return `<tr data-group="${esc(x.question)}"><td>${esc(bare(qq?.title || x.label || x.question, qq?.kind))}</td><td>${esc(x.plain)}</td><td>${esc(x.status)}</td><td>${esc(x.stuck)}</td><td>${g ? ladder(g.rs) : ""}</td></tr>`;
   }).join("")}</tbody></table></section>`);
-  md.push("## 3　路線現況", "", "| 路線 | 白話 | 現況 | 卡在哪 |", "|---|---|---|---|", ...(rep.routes || []).map((x) => `| ${bare(q(x.question)?.title || x.question, q(x.question)?.kind)} | ${x.plain} | ${x.status} | ${x.stuck} |`), "");
+  md.push("## 3　路線現況", "", "| 路線 | 白話 | 現況 | 卡在哪 |", "|---|---|---|---|", ...(rep.routes || []).map((x) => `| ${bare(q(x.question)?.title || x.label || x.question, q(x.question)?.kind)} | ${x.plain} | ${x.status} | ${x.stuck} |`), "");
   if ((rep.unknowns || []).length) {
     html.push(`<section><h3>4　還不知道、可能翻盤的</h3><ul>${rep.unknowns.map((x) => `<li><b>${esc(x.item)}</b>${sup(x.cites)}<br><span class="muted">什麼結果會改變結論：${esc(x.change_if)}</span></li>`).join("")}</ul></section>`);
     md.push("## 4　還不知道、可能翻盤的", "", ...rep.unknowns.map((x) => `- **${x.item}**${supMd(x.cites)}：什麼結果會改變結論——${x.change_if}`), "");
