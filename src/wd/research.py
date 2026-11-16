@@ -189,6 +189,11 @@ def _checked_gauge(gz: dict | None, out: str) -> dict | None:
     return gz
 
 
+# statuses that say nothing beyond the verdict ("adopted", "ended", "frozen …" do say something)
+BARE_STATUS = {"pass", "passed", "fail", "failed", "done", "open", "registered", "running", "void", "closed",
+               "inconclusive", "noverdict", "adjudicatedfail", "gatefailed", "complete", "completed"}
+
+
 def decision_text(d: dict, src: ResearchSource, n: int = 400) -> str:
     """What the record itself says was decided or comes next, verbatim: a
     status with words in it (not a bare pass/fail), adoption, decision, next
@@ -197,7 +202,7 @@ def decision_text(d: dict, src: ResearchSource, n: int = 400) -> str:
     res = res if isinstance(res, dict) else {}
     parts: list[str] = []
     st = _flat(_get(d, src.field_names("status")), 160)
-    if st and not re.fullmatch(r"[a-z_ -]+", st.lower()):
+    if st and re.sub(r"[\W_]+", "", st.lower()) not in BARE_STATUS:
         parts.append(f"狀態：{st}")
     for key, label in (("decision", "決定"), ("next", "下一步")):
         for name in src.field_names(key):
@@ -483,7 +488,7 @@ class ResearchProject:
             r["mentions"] = [m for m in r["mentions"] if m in ids]
         github = None
         if self.src.repo:
-            cache = read_github_cache(github_cache_path(self.overlay_path))
+            cache = read_github_cache(github_cache_path(self.overlay_path), self.src.repo)
             try:
                 by_id = {r["id"]: r for r in records}
                 for rid, prs in github_links(records, index, cache, weak=self.src.reconstructed).items():
@@ -492,7 +497,7 @@ class ResearchProject:
                 errors.append(f"github: {e}")
             github = {"repo": self.src.repo, "fetched_at": _flat(cache.get("fetched_at"), 40),
                       "error": _flat(cache.get("error"), 300), "error_at": _flat(cache.get("error_at"), 40),
-                      "prs": len(cache.get("prs") or [])}
+                      "prs": len(cache["prs"])}
         return {
             "name": self.src.name,
             "label": self.src.label or self.src.name,

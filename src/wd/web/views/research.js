@@ -464,6 +464,7 @@ function meeting(rep, d, D) {
   // the record's own words behind a decision / settled item (verified by the generator)
   const evid = (x) => (x.evidence ? `<br><span class="muted">${W}原文：「${esc(x.evidence.quote)}」</span>` : "");
   const evidMd = (x) => (x.evidence ? `（${W}原文：「${x.evidence.quote}」）` : "");
+  const warnMd = (x) => ((x.warnings || []).length ? `（⚠ ${x.warnings.join("；")}）` : "");
   const html = [], md = [];
   const stale = rep.fingerprint && d.records_fp && rep.fingerprint !== d.records_fp;
   html.push(`<header class="mhead"><h2>${esc(rep.title || "研究進度")}</h2><p class="muted">資料截止 ${esc(rep.cutoff || "")}・${esc(rep.status === "draft" ? "草稿，研究者確認前不要對外" : rep.status || "")}${stale ? "・之後有新的登記，這份還沒更新" : ""}</p></header>`);
@@ -493,12 +494,12 @@ function meeting(rep, d, D) {
   }
   if ((rep.decisions || []).length) {
     html.push(`<section><h3>5　需要決定的事</h3><table class="mtable"><thead><tr><th>決定什麼</th><th>選項與代價</th><th>建議</th><th>誰</th><th>何時前</th></tr></thead><tbody>${rep.decisions.map((x) => `<tr><td>${esc(x.decision)}${sup(x.cites)}${evid(x)}${(x.warnings || []).length ? `<br><span class="fwarn">⚠ ${x.warnings.map(esc).join("；")}</span>` : ""}</td><td>${esc(x.options)}</td><td>${esc(x.recommendation)}${x.basis ? `<br><span class="muted">依據：${esc(x.basis)}</span>` : ""}</td><td>${esc(x.who)}</td><td>${esc(x.by_when)}</td></tr>`).join("")}</tbody></table></section>`);
-    md.push("## 5　需要決定的事", "", "| 決定什麼 | 選項與代價 | 建議 | 誰 | 何時前 |", "|---|---|---|---|---|", ...rep.decisions.map((x) => `| ${x.decision}${evidMd(x)} | ${x.options} | ${x.recommendation}${x.basis ? `（依據：${x.basis}）` : ""} | ${x.who} | ${x.by_when} |`), "");
+    md.push("## 5　需要決定的事", "", "| 決定什麼 | 選項與代價 | 建議 | 誰 | 何時前 |", "|---|---|---|---|---|", ...rep.decisions.map((x) => `| ${x.decision}${evidMd(x)}${warnMd(x)} | ${x.options} | ${x.recommendation}${x.basis ? `（依據：${x.basis}）` : ""} | ${x.who} | ${x.by_when} |`), "");
   }
   // questions that look open but were already settled (pre-registered rules, earlier re-adjudications)
   if ((rep.settled || []).length) {
     html.push(`<section><h3>已經定了、不必上會的</h3><ul>${rep.settled.map((x) => `<li><b>${esc(x.item)}</b>：${esc(x.decided)}${sup(x.cites)}${evid(x)}${x.basis ? `<br><span class="muted">依據：${esc(x.basis)}</span>` : ""}${(x.warnings || []).length ? `<br><span class="fwarn">⚠ ${x.warnings.map(esc).join("；")}</span>` : ""}</li>`).join("")}</ul></section>`);
-    md.push("## 已經定了、不必上會的", "", ...rep.settled.map((x) => `- **${x.item}**：${x.decided}${evidMd(x)}${x.basis ? `（依據：${x.basis}）` : ""}`), "");
+    md.push("## 已經定了、不必上會的", "", ...rep.settled.map((x) => `- **${x.item}**：${x.decided}${evidMd(x)}${x.basis ? `（依據：${x.basis}）` : ""}${warnMd(x)}`), "");
   }
   if ((rep.next_weeks || []).length) {
     html.push(`<section><h3>6　接下來四週</h3><ul>${rep.next_weeks.map((x) => `<li><b>${esc(x.task)}</b>：做完會知道 ${esc(x.learn)}</li>`).join("")}</ul></section>`);
@@ -510,7 +511,14 @@ function meeting(rep, d, D) {
   md.push("## 附錄 A　出處", "", `| 註 | 日期 | 在問什麼 | ${W === "紀錄" ? "判定" : "登記判定"} | 證據層級 | ${W}編號 |${D.repo ? " PR |" : ""}`, `|---|---|---|---|---|---|${D.repo ? "---|" : ""}`,
     ...appendix.map(({ n, r }) => `| [${n}] | ${r.ts.slice(0, 10)} | ${nameOf(r)} | ${(OUTCOME[r.outcome] || OUTCOME.other)[1]} | ${LEVEL[r.level || 0]}${r.n ? `，${r.n} ${UNIT}` : ""} | ${r.id} |${D.repo ? ` ${strongPrs(r).map((x) => `#${x.n}`).join(" ")} |` : ""}`), "");
   if ((rep.glossary || []).length) md.push("## 附錄 B　名詞", "", ...rep.glossary.map((x) => `- **${x.term}**：${x.plain}`), "");
-  return { html: html.join(""), md: md.join("\n") };
+  return { html: html.join(""), md: noUrls(md.join("\n")) };
+}
+
+// Exports leave the page: PR links become bare numbers and other URLs are dropped,
+// so a copied report never carries private repository addresses.
+function noUrls(text) {
+  return text.replace(/https?:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/(\d+)[^\s)）」|]*/g, "PR #$1")
+    .replace(/https?:\/\/[^\s)）」|]+/g, "（網址已移除）");
 }
 
 function reportView(d, D, label) {
@@ -519,7 +527,7 @@ function reportView(d, D, label) {
   if (!rep || ui.reportList) {
     return `<div class="rreport"><p class="muted">${rep ? `證據清單：依目標與方向列出每筆${W}，給研究者核對用。` : "還沒有會議版報告。在 hub 上執行 <code>wd research propose &lt;name&gt; --stages claims,report</code> 產生。下面是證據清單。"}</p>
       <div class="rrbar">${rep ? `<button type="button" data-rlist="0">回會議版</button>` : ""}<button type="button" id="rrcopy">複製 Markdown</button><button type="button" id="rrsave">下載 .md</button></div>
-      <pre id="rrmd">${esc(list)}</pre></div>`;
+      <pre id="rrmd">${esc(noUrls(list))}</pre></div>`;
   }
   const m = meeting(rep, d, D);
   return `<div class="rreport meeting"><div class="rrbar"><button type="button" id="rrcopy">複製 Markdown</button><button type="button" id="rrsave">下載 .md</button><button type="button" data-rlist="1">證據清單</button></div>

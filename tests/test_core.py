@@ -919,7 +919,70 @@ class GithubAndDecisionsTest(unittest.TestCase):
             self.assertIn("gh not found", out["error"])
             self.assertEqual((out["fetched_at"], out["prs"]), ("t0", [{"n": 1}]))
             self.assertEqual(json.loads(path.read_text())["prs"], [{"n": 1}])
-        self.assertEqual(gh.pr_refs("見PR #42、PR12 與 https://github.com/o/r/pull/7；#9 不算；PR-AUC 不算"), [7, 12, 42])
+        self.assertEqual(gh.pr_refs("見PR #42、PR12 與 https://github.com/O/r/pull/7；#9 不算；PR-AUC 不算"),
+                         [["", 12], ["", 42], ["o/r", 7]])
+
+    def test_cache_provenance_and_foreign_urls(self):
+        from wd import research_github as gh
+        from wd.research import ResearchProject, ResearchSource
+        with tempfile.TemporaryDirectory() as d:
+            reg, ids = self._registry(d, 3)
+            (reg / f"{ids[0]}.json").write_text(json.dumps({"id": ids[0], "ts": "2026-01-01",
+                                                           "why": "see https://github.com/other/repo/pull/5 and PR #6"}))
+            data_dir = Path(d) / "data"
+            (data_dir / "research").mkdir(parents=True)
+            cache = data_dir / "research" / "demo.github.json"
+            prs = [{"n": n, "title": "t", "state": "MERGED", "merged": "2026-01-02T00:00:00Z", "branch": "b", "files": []} for n in (5, 6)]
+            cache.write_text(json.dumps({"repo": "o/r", "prs": prs}))
+            recs = {r["id"]: r for r in ResearchProject(ResearchSource("demo", reg, repo="o/r"), data_dir).data()["records"]}
+            self.assertEqual([(x["n"], x["role"]) for x in recs[ids[0]]["prs"]], [(6, "cited")])  # other repo's #5 ignored
+            # a cache written for another repo is not used, and a broken prs field costs the links, not the page
+            data = ResearchProject(ResearchSource("demo", reg, repo="new/repo"), data_dir).data()
+            self.assertEqual((data["github"]["prs"], [r for r in data["records"] if r.get("prs")]), (0, []))
+            cache.write_text(json.dumps({"repo": "o/r", "prs": 42}))
+            self.assertEqual(ResearchProject(ResearchSource("demo", reg, repo="o/r"), data_dir).data()["github"]["prs"], 0)
+            # a failure after a repo change keeps nothing from the old repo
+            cache.write_text(json.dumps({"repo": "o/r", "prs": prs}))
+            old = gh.gh_exe
+            gh.gh_exe = lambda: None
+            try:
+                self.assertEqual(gh.fetch("new/repo", cache)["prs"], [])
+            finally:
+                gh.gh_exe = old
+            # a stale cache starts one refresh; attempts stay spaced out even when each one fails to write
+            os.utime(cache, (time.time() - 7200, time.time() - 7200))
+            calls, real_fetch = [], gh.fetch
+            gh.fetch = lambda repo, path: calls.append(repo)
+            gh._tried.clear()
+            try:
+                started = [gh.refresh_async("new/repo", cache, every=3600) for _ in range(3)]
+                for t in [t for t in __import__("threading").enumerate() if t.name.startswith("wd-github-")]:
+                    t.join(5)
+                started.append(gh.refresh_async("new/repo", cache, every=3600))  # finished, cache still stale: wait anyway
+            finally:
+                gh.fetch = real_fetch
+            self.assertEqual((started, calls), ([True, False, False, False], ["new/repo"]))
+
+    def test_big_prs_get_their_full_file_list(self):
+        from wd import research_github as gh
+        with tempfile.TemporaryDirectory() as d:
+            fake = Path(d) / "gh"
+            first100 = [{"path": f"registry/REG-20260101-{k:04x}.json"} for k in range(100)]
+            fake.write_text("#!" + sys.executable + "\nimport sys, json\n"
+                            "if sys.argv[1:3] == ['pr', 'list']:\n"
+                            f"    print(json.dumps([{{'number': 16, 'title': 'import', 'state': 'MERGED', 'mergedAt': '2026-01-02T00:00:00Z', 'headRefName': 'b', 'files': {first100!r}}}]))\n"
+                            "elif sys.argv[1] == 'api' and 'pulls/16/files' in sys.argv[3]:\n"
+                            "    print('\\n'.join(f'registry/REG-20260101-{k:04x}.json' for k in range(120)))\n"
+                            "else:\n    sys.exit(1)\n")
+            fake.chmod(0o755)
+            old = gh.gh_exe
+            gh.gh_exe = lambda: str(fake)
+            try:
+                out = gh.fetch("o/r", Path(d) / "c.github.json")
+            finally:
+                gh.gh_exe = old
+            self.assertEqual(out["error"], "")
+            self.assertEqual((len(out["prs"][0]["files"]), out["prs"][0]["files_cut"]), (120, False))
 
     def test_decision_text_is_the_records_own_words(self):
         from wd.research import ResearchSource, decision_text
@@ -932,7 +995,9 @@ class GithubAndDecisionsTest(unittest.TestCase):
         self.assertIn("下一步：先補資料", t)
         self.assertEqual(decision_text({"status": "fail", "result": {"verdict": "FAIL"}}, src), "")  # a bare verdict isn't a decision
         rec_x = {"status": "ended", "decision": "none", "quotes": {"decision": "10/10 決定結束這個實驗"}}
-        self.assertEqual(decision_text(rec_x, src), "原文：10/10 決定結束這個實驗")
+        self.assertEqual(decision_text(rec_x, src), "狀態：ended ／ 原文：10/10 決定結束這個實驗")
+        self.assertIn("frozen by the user", decision_text({"status": "frozen by the user"}, src))  # English sentences count
+        self.assertEqual(decision_text({"status": "PASS."}, src), "")
 
     def test_report_decisions_must_quote_a_record(self):
         from wd.research import ResearchSource
@@ -941,7 +1006,8 @@ class GithubAndDecisionsTest(unittest.TestCase):
             reg = Path(d) / "registry"
             reg.mkdir()
             a = {"id": "REG-20260101-aaaa", "ts": "2026-01-01", "title": "路線 A", "status": "registered；凍結（使用者 1/09）",
-                 "result": {"verdict": "FAIL", "cv": "對 12 個公開實測材料，誤差 3 倍", "adopt": "NOT-ADOPTED：等補資料再談"}}
+                 "result": {"verdict": "FAIL", "cv": "對 12 個公開實測材料，誤差 3 倍", "adopt": "NOT-ADOPTED：等補資料再談",
+                            "note": "改用 \"Fast\" 模式；決定不採用方法甲；方法乙待決定"}}
             b = {"id": "REG-20260102-bbbb", "ts": "2026-01-02", "title": "門檻", "status": "pass",
                  "result": {"verdict": "PASS", "cv": "12 個公開實測材料上誤差 1.5 倍", "adopt": "達成門檻要多少尚未定義，待主管決定"}}
             for r in (a, b):
@@ -968,7 +1034,10 @@ class GithubAndDecisionsTest(unittest.TestCase):
                                    "findings": [], "evidence": {"id": "", "quote": ""}}],
                     "settled": [{"item": "路線 A", "decided": "等補資料", "findings": [],
                                  "evidence": {"id": a["id"], "quote": "等補資料再談"}},
-                                {"item": "編的", "decided": "x", "findings": [], "evidence": {"id": a["id"], "quote": "記錄裡沒有這句話"}}]},
+                                {"item": "編的", "decided": "x", "findings": [], "evidence": {"id": a["id"], "quote": "記錄裡沒有這句話"}},
+                                {"item": "模式", "decided": "Fast", "findings": [], "evidence": {"id": a["id"], "quote": "改用 \"Fast\" 模式"}},
+                                {"item": "方法甲", "decided": "採用", "findings": [], "evidence": {"id": a["id"], "quote": "決定…採用方法甲"}},
+                                {"item": "方法乙", "decided": "定了", "findings": [], "evidence": {"id": a["id"], "quote": "方法乙待決定"}}]},
             }
             old = os.environ.get("WD_CLAUDE")
             os.environ["WD_CLAUDE"] = _fake_claude(d, answers)
@@ -982,7 +1051,11 @@ class GithubAndDecisionsTest(unittest.TestCase):
             self.assertEqual(d1["warnings"], [])
             self.assertNotIn("evidence", d2)
             self.assertTrue(any("還沒定" in w for w in d2["warnings"]))
-            s1, s2 = rep["settled"]
+            s1, s2, s3, s4, s5 = rep["settled"]
+            self.assertEqual((s3.get("evidence", {}).get("id"), s3["warnings"]), (a["id"], []))  # escaped quotes match as written
+            self.assertNotIn("evidence", s4)  # "…" can't drop the 不
+            self.assertEqual(s5["evidence"]["quote"], "方法乙待決定")
+            self.assertTrue(any("還沒定" in w for w in s5["warnings"]))  # a settled item quoting an open one
             self.assertEqual((s1["evidence"]["id"], s1["warnings"]), (a["id"], []))
             self.assertIn(a["id"], s1["cites"])
             self.assertNotIn("evidence", s2)

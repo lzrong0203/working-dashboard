@@ -176,8 +176,8 @@ M_PROMPT = """請把下面的研究整理寫成一份 10–15 分鐘的會議報
 - 只能使用下面「結論清單」裡的內容；learned 與 unknowns 一定要列出所根據的結論 id（findings 欄位），不得新增沒有出處的說法。
 - 把握程度不要自己寫，報告產生器會依結論 id 自動帶出。
 - learned 選 3–5 條「會改變下一步、或打開或關掉一條路線」的；routes 列主命題的各條途徑；unknowns 最多 3 條可能翻盤的；
-  decisions 只列還沒定、而且研究者自己定不了的事，並列出根據的結論 id；evidence 給一筆登記的編號和能看出「這件事還沒定」的逐字引句（40 字內，例如寫著待決定、尚未定義），找不到就 id 與 quote 都給空字串；
-  下面「登記裡寫的決定與下一步」已經寫了採用、不採用、凍結、規則或下一步的事，放進 settled（已經定了、不必上會），evidence 給那筆的編號和逐字引句（40 字內），不要當成待決；next_weeks 最多 5 項，各寫做完會知道什麼。
+  decisions 只列還沒定、而且研究者自己定不了的事，並列出根據的結論 id；evidence 給一筆登記的編號和能看出「這件事還沒定」的引句（從原文逐字連續複製，40 字內，不要用…省略，例如寫著待決定、尚未定義），找不到就 id 與 quote 都給空字串；
+  下面「登記裡寫的決定與下一步」已經寫了採用、不採用、凍結、規則或下一步的事，放進 settled（已經定了、不必上會），evidence 給那筆的編號和逐字連續複製的引句（40 字內，不要用…省略），不要當成待決；next_weeks 最多 5 項，各寫做完會知道什麼。
 - 要能在會議上講：one_page 的 goal 60 字內、success 80 字內、answer 80 字內、why_hard 80 字內；numbers 正好 3 個，每個一句、列出根據的結論 id；
   learned 的 headline 一句結論（30 字內）、basis 100 字內、so_what 80 字內；unknowns 的 item 40 字內、change_if 80 字內；decisions 每欄 60 字內；next_weeks 每項 50 字內。
 {rules}
@@ -265,6 +265,17 @@ def quote_supported(quote: str, text_norm: str) -> bool:
     if not pieces or len(_PUNCT.sub("", "".join(pieces))) < 6:
         return False
     return all(len(_PUNCT.sub("", x)) >= 2 and x in text_norm for x in pieces)
+
+
+# words that say an item is still open; a "settled" quote containing them is suspect, an "open" one needs them
+OPEN_WORDS = re.compile(r"待[^，。；,;]{0,10}?(?:決定|確認|裁定|定案|拍板|討論)|待定|尚未|還沒|未定|未決|pending|tbd|to be decided|undecided|awaiting", re.I)
+
+
+def evidence_ok(quote: str, text_norm: str) -> bool:
+    """A decision's evidence: one contiguous verbatim piece (no … that could
+    drop a 不), short is fine, compared with the record's decoded text."""
+    q = _norm(quote).strip("「」『』\"'“”‘’")
+    return bool(q) and "…" not in q and "..." not in q and len(_PUNCT.sub("", q)) >= 3 and q in text_norm
 
 
 def _instant(ts: str):
@@ -460,6 +471,7 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
             continue
     ids = [i for i in recs if i in raw]
     dtext = {i: decision_text(raw[i], src) for i in ids}  # the record's own words; never AI-written
+    plain = {i: _norm(" ".join(_strings(raw[i]))) for i in ids}  # decoded values: quotes and newlines as written
     code_to_id: dict[str, str] = {}
     for r in recs.values():
         if r["code"]:
@@ -616,7 +628,7 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
                                 # so an invented summary can't vouch for itself
                                 summ_ok = [t for t in (enriched[c["id"]].get("result", ""), enriched[c["id"]].get("why", ""))
                                            if t and not numbers_ok(t, [raw_c])]
-                                src_text = _norm(" ".join([*summ_ok, raw_c]))
+                                src_text = _norm(" ".join([*summ_ok, raw_c])) + plain.get(c["id"], "")
                                 if quote_supported(_flat(c.get("quote"), 300), src_text):
                                     cites.append({"id": c["id"], "role": c["role"], "quote": _flat(c.get("quote"), 200)})
                         st_ = _flat(f.get("statement"), 200)
@@ -701,14 +713,15 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
                 ev = x.get("evidence") if isinstance(x.get("evidence"), dict) else {}
                 rid, quote = str(ev.get("id") or ""), _flat(ev.get("quote"), 300)
                 rid = rid if rid in recs else code_to_id.get(rid, "")
-                if rid in raw_text and quote_supported(quote, _norm(raw_text[rid])):
+                if rid in plain and evidence_ok(quote, plain[rid]):
                     return {"id": rid, "quote": _flat(quote, 200)}
                 return None
 
             for x in [x for x in md.get("decisions", []) if isinstance(x, dict)][:4]:
                 fids, cites, _ = from_findings(x.get("findings", []) if isinstance(x.get("findings"), list) else [])
                 ev = evidence(x)
-                warn = ([] if fids else ["沒有對應的結論"]) + ([] if ev else [f"找不到{word}原文證明這件事還沒定，上會前請先核對"])
+                warn = ([] if fids else ["沒有對應的結論"]) + ([] if ev else [f"找不到{word}原文證明這件事還沒定，上會前請先核對"]) \
+                    + (["引句看不出這件事還沒定，請核對"] if ev and not OPEN_WORDS.search(ev["quote"]) else [])
                 report["decisions"].append({**{k: _flat(x.get(k), 240) for k in ("decision", "options", "recommendation", "who", "by_when")},
                                             "findings": fids, "cites": cites + ([ev["id"]] if ev and ev["id"] not in cites else []),
                                             **({"evidence": ev} if ev else {}), "warnings": warn})
@@ -718,7 +731,9 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
                 ev = evidence(x)
                 report["settled"].append({"item": _flat(x.get("item"), 120), "decided": _flat(x.get("decided"), 240), "findings": fids,
                                           "cites": cites + ([ev["id"]] if ev and ev["id"] not in cites else []),
-                                          **({"evidence": ev} if ev else {}), "warnings": [] if ev else [f"找不到{word}原文證明已經定了"]})
+                                          **({"evidence": ev} if ev else {}),
+                                          "warnings": [f"找不到{word}原文證明已經定了"] if not ev
+                                          else ["引句寫的是還沒定，請核對是不是真的定了"] if OPEN_WORDS.search(ev["quote"]) else []})
             report["next_weeks"] = [{k: _flat(x.get(k), 200) for k in ("task", "learn")} for x in md.get("next_weeks", []) if isinstance(x, dict)][:5]
             report["glossary"] = [{k: _flat(x.get(k), 160) for k in ("term", "plain")} for x in md.get("glossary", []) if isinstance(x, dict)][:10]
             report["cutoff"] = max((recs[i]["ts"] for i in ids), default="")[:10]

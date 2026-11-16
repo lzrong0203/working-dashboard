@@ -20,6 +20,7 @@ GitHub.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -28,6 +29,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
 
@@ -36,17 +38,21 @@ BULK = 5  # a PR changing more record files than this is a bulk change, not abou
 WINDOW = (3, 14)  # weak matches: merged from N days before to M days after the record
 MAX_MENTIONS = 5
 MAX_CACHE = 16 * 1024 * 1024
+MAX_FILES_PR = 3000  # GitHub's own cap on a PR's file listing
 ROLE_ORDER = ("registered", "updated", "open", "cited", "mentions")
-# "PR #12", "PR12", ".../pull/12"; a bare "#12" is too often something else
-PR_REF = re.compile(r"(?:(?<![A-Za-z])PR\s*#?\s*|/pull/)(\d{1,6})(?!\d)")
+# "PR #12", "PR12" (this repo), "github.com/owner/name/pull/12" (that repo); a bare "#12" is too often something else
+PR_REF = re.compile(r"github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/(\d{1,6})(?!\d)|(?<![A-Za-z/])PR\s*#?\s*(\d{1,6})(?!\d)")
 
 
 def cache_path(overlay_path: Path) -> Path:
     return overlay_path.with_name(overlay_path.stem + ".github.json")
 
 
-def pr_refs(text: str) -> list[int]:
-    return sorted({int(x) for x in PR_REF.findall(text or "")})[:20]
+def pr_refs(text: str) -> list[list]:
+    """PR numbers a record names, as [repo, n]; repo is "" for a bare "PR #n"
+    (meaning the project's own repo), so a URL into another repo can't match."""
+    out = {(repo.lower(), int(n or bare)) for repo, n, bare in PR_REF.findall(text or "")}
+    return [list(x) for x in sorted(out)][:20]
 
 
 def gh_exe() -> str | None:
@@ -55,14 +61,34 @@ def gh_exe() -> str | None:
     return shutil.which("gh", path=os.environ.get("PATH", "") + os.pathsep + extra)
 
 
-def read_cache(path: Path) -> dict:
+def read_cache(path: Path, repo: str | None = None) -> dict:
+    """The cache, with ``prs`` always a list. With ``repo``, a cache written for
+    another repository counts as empty (its PR numbers mean other PRs)."""
     try:
         if path.stat().st_size > MAX_CACHE:
-            return {"error": "cache too large"}
+            return {"error": "cache too large", "prs": []}
         d = json.loads(path.read_text(encoding="utf-8"))
-        return d if isinstance(d, dict) else {}
     except (FileNotFoundError, ValueError, OSError):
-        return {}
+        return {"prs": []}
+    if not isinstance(d, dict):
+        return {"prs": []}
+    if repo is not None and str(d.get("repo") or "").lower() != repo.lower():
+        return {"prs": []}
+    if not isinstance(d.get("prs"), list):
+        d["prs"] = []
+    return d
+
+
+@contextmanager
+def _locked(path: Path):
+    """One writer at a time per cache, across processes (the hub and the CLI)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.with_name(f".{path.name}.lock"), "w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
 
 
 def _write(path: Path, data: dict) -> None:
@@ -84,13 +110,23 @@ def _clean_pr(p: dict) -> dict | None:
     files = [f.get("path") for f in p.get("files") or [] if isinstance(f, dict) and isinstance(f.get("path"), str)]
     return {"n": p["number"], "title": str(p.get("title") or "")[:200], "state": str(p.get("state") or ""),
             "merged": str(p.get("mergedAt") or ""), "branch": str(p.get("headRefName") or "")[:120],
-            "files": files[:100], "files_cut": len(files) >= 100}  # GitHub lists at most 100 files per PR here
+            "files": files[:100], "files_cut": len(files) >= 100}  # the PR list shows at most 100 files per PR
+
+
+def _all_files(exe: str, repo: str, n: int, env: dict, timeout: int) -> list[str] | None:
+    """Every file a PR changed (the REST listing pages to GitHub's 3000-file cap)."""
+    try:
+        p = subprocess.run([exe, "api", "--paginate", f"repos/{repo}/pulls/{n}/files?per_page=100", "--jq", ".[].filename"],
+                           capture_output=True, text=True, timeout=timeout, env=env, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return [x for x in p.stdout.splitlines() if x] if p.returncode == 0 else None
 
 
 def fetch(repo: str, path: Path, timeout: int = 300) -> dict:
     """List every PR of ``repo`` with its changed files and write the cache.
-    A failure keeps the last good list and records the error beside it."""
-    old = read_cache(path)
+    A failure keeps the last good list (of the same repo) and records the error
+    beside it, merged into whatever the cache holds by then."""
     now = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     exe = gh_exe()
     try:
@@ -105,31 +141,53 @@ def fetch(repo: str, path: Path, timeout: int = 300) -> dict:
         raw = json.loads(p.stdout)
         if not isinstance(raw, list):
             raise RuntimeError("unexpected gh output")
-        out = {"repo": repo, "fetched_at": now, "error": "", "prs": [x for x in map(_clean_pr, raw) if x]}
+        prs = [x for x in map(_clean_pr, raw) if x]
+        for x in prs:  # the list stops at 100 files per PR; big PRs get their full list separately
+            if x["files_cut"]:
+                full = _all_files(exe, repo, x["n"], env, timeout)
+                if full is not None:
+                    x["files"], x["files_cut"] = full[:MAX_FILES_PR], len(full) > MAX_FILES_PR
+        out = {"repo": repo, "fetched_at": now, "error": "", "prs": prs}
+        with _locked(path):
+            _write(path, out)
     except Exception as e:
-        out = {**old, "repo": repo, "error": f"{type(e).__name__}: {e}"[:300], "error_at": now}
-        out.setdefault("prs", [])
-    _write(path, out)
+        err = f"{type(e).__name__}: {e}"[:300]
+        with _locked(path):  # re-read under the lock: a newer success must not be rolled back
+            out = {**read_cache(path, repo), "repo": repo, "error": err, "error_at": now}
+            _write(path, out)
     return out
 
 
 _running: set[str] = set()
+_tried: dict[str, float] = {}  # last start per cache, so a failing write can't cause a fetch per request
+_seen: dict[str, tuple[float, str]] = {}  # cache mtime -> the repo it was written for
 _guard = threading.Lock()
 
 
+def _cache_repo(path: Path, mtime: float) -> str:
+    key = str(path)
+    if _seen.get(key, (None, ""))[0] != mtime:
+        _seen[key] = (mtime, str(read_cache(path).get("repo") or "").lower())
+    return _seen[key][1]
+
+
 def refresh_async(repo: str, path: Path, every: int = REFRESH) -> bool:
-    """Start a background refresh when the cache is missing or older than
-    ``every`` seconds (failures wait as long as successes before retrying).
-    Returns True when a refresh was started."""
-    try:
-        age = time.time() - path.stat().st_mtime
-    except OSError:
-        age = every + 1
+    """Start a background refresh when the cache is missing, older than
+    ``every`` seconds, or written for another repo. Attempts are spaced
+    ``every`` seconds apart whatever their outcome. Returns True when started."""
     key = str(path)
     with _guard:
-        if age < every or key in _running:
+        if key in _running or time.time() - _tried.get(key, 0) < every:
+            return False
+        try:
+            mtime = path.stat().st_mtime
+            fresh = time.time() - mtime < every and _cache_repo(path, mtime) == repo.lower()
+        except OSError:
+            fresh = False
+        if fresh:
             return False
         _running.add(key)
+        _tried[key] = time.time()
 
     def run():
         try:
@@ -181,9 +239,12 @@ def links(records: list[dict], files: dict[str, Path], cache: dict, weak: bool =
         if p.get("state") == "OPEN":
             for rid in touched.get(p["n"], []):
                 add(rid, p, "open")
+    own = str(cache.get("repo") or "").lower()
     for r in records:
-        for n in r.get("pr_refs") or []:
-            p = by_n.get(n)
+        for ref in r.get("pr_refs") or []:
+            if not (isinstance(ref, list) and len(ref) == 2 and ref[0] in ("", own)):
+                continue
+            p = by_n.get(ref[1])
             if p and (p.get("merged") or p.get("state") == "OPEN"):
                 add(r["id"], p, "cited")
     if weak:
@@ -199,8 +260,10 @@ def links(records: list[dict], files: dict[str, Path], cache: dict, weak: bool =
                     near.append((abs((d - t0).days), p))
             for _, p in sorted(near, key=lambda x: (x[0], x[1]["n"]))[:MAX_MENTIONS]:
                 add(r["id"], p, "mentions")
-    for lst in out.values():
-        lst.sort(key=lambda x: (ROLE_ORDER.index(x["role"]), x["merged"] or "9999", x["n"]))
+    for lst in out.values():  # registered first, then the newest specific updates; bulk changes last
+        lst.sort(key=lambda x: (ROLE_ORDER.index(x["role"]), x["bulk"],
+                                -int((x["merged"] or "0").replace("-", "")) if x["role"] == "updated" else int((x["merged"] or "9999").replace("-", "")),
+                                x["n"]))
     return out
 
 
