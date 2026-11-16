@@ -359,7 +359,7 @@ def checks(text: str, cites: list[dict], recs: dict, raw_text: dict, forbidden: 
     sup = [recs[c["id"]] for c in cites if c.get("role") == "supports" and c["id"] in recs]
     # "沒有比較好" is the opposite of a claim; only flag the words when not negated just before
     claim = next((m.group(0) for m in re.finditer(r"成立|證明|較好|更好", text or "")
-                  if not re.search(r"[沒不未無非]", (text or "")[max(0, m.start() - 4):m.start()])), "")
+                  if not re.search(r"[沒不未無非]", (text or "")[max(0, m.start() - 8):m.start()])), "")
     if sup and all(r.get("outcome") != "pass" for r in sup) and claim:
         warn.append(f"支持的{word}沒有一筆通過，卻用了「{claim}」")
     if CODE.search(text or ""):
@@ -537,7 +537,8 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
                     blocks.append(f"[{q['id']}] {q['title']}（{len(mem)} 筆）\n" + ("\n".join(lines) or "  （沒有登記）"))
                 try:
                     cd = call_claude(adapt(C_PROMPT, src).format(goal=g["title"], bar=g.get("bar", ""), blocks="\n\n".join(blocks), unit=src.unit,
-                                                                   verdict_note=VERDICT_NOTE[src.reconstructed]), C_SCHEMA, config_dir, synth)
+                                                                   verdict_note=VERDICT_NOTE[src.reconstructed]), C_SCHEMA, config_dir, synth,
+                                    timeout=1800)
                 except Exception as e:
                     log(f"[propose] claims {g['id']}: {e}")
                     continue
