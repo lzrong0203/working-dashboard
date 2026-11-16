@@ -38,7 +38,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from wd.research import CODE, DEFAULT_LADDER, MAX_FILE, ResearchProject, ResearchSource, _flat, _get, addenda, decision_text
+from wd.research import (CODE, DEFAULT_LADDER, MAX_FILE, ResearchProject, ResearchSource, _flat, _get, addenda, decision_text,
+                         match_register, read_register, register_path)
 
 LINK_TYPES = ("because", "follows", "readjudicates", "supersedes", "corrects", "uses")
 STUCK = ("method", "measure", "external", "not_started", "closed", "none")
@@ -175,6 +176,7 @@ M_PROMPT = """請把下面的研究整理寫成一份 10–15 分鐘的會議報
 - 不要出現內部實驗代號；一句最多一個主要數字，照結論清單裡的寫法，不要自己換算成倍數；不用 dex、R² 等術語（真的要用就放進 glossary 解釋）；每個數字後面說跟什麼比。
 - 只能使用下面「結論清單」裡的內容；learned 與 unknowns 一定要列出所根據的結論 id（findings 欄位），不得新增沒有出處的說法。
 - 把握程度不要自己寫，報告產生器會依結論 id 自動帶出。
+- 最後面「研究者已經核對過的事」：已確認的會由報告產生器原樣放進報告，decisions 與 settled 不要重複列、也不要改寫；判定不對的不要再列。
 - learned 選 3–5 條「會改變下一步、或打開或關掉一條路線」的；routes 列主命題的各條途徑；unknowns 最多 3 條可能翻盤的；
   decisions 只列還沒定、而且研究者自己定不了的事，並列出根據的結論 id；evidence 給一筆登記的編號和能看出「這件事還沒定」的引句（從原文逐字連續複製，40 字內，不要用…省略，例如寫著待決定、尚未定義），找不到就 id 與 quote 都給空字串；
   下面「登記裡寫的決定與下一步」已經寫了採用、不採用、凍結、規則或下一步的事，放進 settled（已經定了、不必上會），evidence 給那筆的編號和逐字連續複製的引句（40 字內，不要用…省略），不要當成待決；next_weeks 最多 5 項，各寫做完會知道什麼。
@@ -189,6 +191,9 @@ M_PROMPT = """請把下面的研究整理寫成一份 10–15 分鐘的會議報
 
 登記裡寫的決定與下一步（登記原文，依途徑分組，新的在前）：
 {decided}
+
+研究者已經核對過的事（以研究者為準）：
+{confirmed}
 """
 
 
@@ -391,6 +396,17 @@ def checks(text: str, cites: list[dict], recs: dict, raw_text: dict, forbidden: 
 
 def strip_codes(text: str) -> str:
     return re.sub(r"\s{2,}", " ", CODE.sub("", text or "")).strip(" ：:，,")
+
+
+def confirmed_block(register: list[dict]) -> str:
+    """What a person already confirmed or dismissed, for the report prompt."""
+    rows = {("decision", "confirmed"): "已確認的待決定", ("settled", "confirmed"): "已確認的已定事項",
+            ("decision", "dismissed"): "判定不對、不要再列", ("settled", "dismissed"): "判定不對、不要再列"}
+    out: dict[str, list[str]] = {}
+    for r in register:
+        line = f"- {r['text'] or r['from_text']}" + (f"：{r['detail']}" if r["detail"] and r["status"] == "confirmed" else "")
+        out.setdefault(rows[(r["kind"], r["status"])], []).append(line[:400])
+    return "\n".join(f"{k}：\n" + "\n".join(v[:30]) for k, v in out.items()) or "（還沒有）"
 
 
 def decided_block(overlay: dict, recs: dict, ids: list[str], dtext: dict[str, str], per_q: int = 4, budget: int = 20000) -> str:
@@ -654,7 +670,9 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
                 for q in overlay["questions"] if q.get("parent") == g["id"]) for g in overlay["goals"])
             f_txt = "\n".join(f"{fid}｜{f['confidence']}｜{f['statement']}｜{f['basis']}｜{f['so_what']}｜{f['change_if']}" for fid, (q, f) in fl.items())
             rules = (f"- 不得使用這些詞：{'、'.join(forbidden)}\n" if forbidden else "")
-            md = call_claude(adapt(M_PROMPT, src).format(rules=rules, goals=goals_txt, findings=f_txt, decided=decided_block(overlay, recs, ids, dtext)),
+            register = read_register(register_path(out_path))
+            md = call_claude(adapt(M_PROMPT, src).format(rules=rules, goals=goals_txt, findings=f_txt, decided=decided_block(overlay, recs, ids, dtext),
+                                                         confirmed=confirmed_block(register)),
                              M_SCHEMA, config_dir, synth, timeout=1500)
             if not isinstance(md, dict) or not md.get("learned"):
                 raise RuntimeError("report stage returned nothing usable; previous report kept")
@@ -717,6 +735,10 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
                     return {"id": rid, "quote": _flat(quote, 200)}
                 return None
 
+            # a person's word wins: items already confirmed or dismissed are not generated again
+            for sec, key in (("decisions", "decision"), ("settled", "item")):
+                if isinstance(md.get(sec), list):
+                    md[sec] = [x for x in md[sec] if isinstance(x, dict) and not match_register(str(x.get(key) or ""), register)]
             for x in [x for x in md.get("decisions", []) if isinstance(x, dict)][:4]:
                 fids, cites, _ = from_findings(x.get("findings", []) if isinstance(x.get("findings"), list) else [])
                 ev = evidence(x)

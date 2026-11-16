@@ -214,10 +214,45 @@ repo = "owner/name"   # private config only
     stages: agent-written PR descriptions would otherwise "verify" claims
     against themselves.
 
+### Confirmed items (人已確認)
+
+Each run of the report stage words things a little differently, so a reviewed
+report can't simply be regenerated. Items a person has checked live in their own
+file, `<name>.decisions.json` beside the overlay. The generator reads it and
+never writes it.
+
+- In the report view, every generated decision or settled item has buttons:
+  - **確認**: opens a form prefilled with the item, to save as-is or reworded.
+  - **其實已經定了 / 其實還沒定**: moves the item to the other section.
+  - **不對**: dismisses it.
+- **新增** adds an item no record mentions, such as a manager decision that was
+  never written down. **修改** edits an entry, for example to record the
+  outcome once a decision is made. **取消確認** removes an entry and needs a
+  second press.
+- Confirmed entries come first in their section, marked 人已確認 with a date.
+  Dismissed ones are listed folded, with 復原.
+- **Matching.** A generated item counts as an already-checked one when its text
+  equals the wording the person confirmed or dismissed, or is close to either
+  wording (`same_item`: character overlap ≥ 0.6, at least four characters).
+  This matching runs both when the page loads and when a new report is
+  generated. The report prompt also lists what was confirmed or dismissed, so
+  later runs neither repeat nor revive those items.
+- **Markdown export.** It marks each item 人已確認 or AI 草稿，未確認.
+
 ## Security properties
 
-- No HTTP write endpoint exists. The only writes are `ssh <hub> wd rpc`, so
-  access control is your SSH keys.
+- Session data and work items are written only through `ssh <hub> wd rpc`, so
+  access control for them is your SSH keys.
+- One HTTP write exists: `POST /api/research/decisions`, a person confirming or
+  dismissing report items. It is accepted only when all of these hold:
+  - the `Origin` is a board page: loopback, on this hub's port, a peer hub's
+    port or a realm's view port (other local pages, such as dev servers or the
+    pixel office, are refused);
+  - the request carries `X-WD-Write: 1` and a JSON content type, so a
+    cross-site form can't send it and a browser must pass a CORS preflight;
+  - the body is at most 32 KB, and every field is clipped and validated.
+
+  It writes only `<name>.decisions.json`, atomically and under a lock.
 - The server binds `127.0.0.1` and rejects any non-loopback `Host` or `Origin`,
   which blocks DNS rebinding. CORS is allowed only between loopback origins, for
   the realm merge.

@@ -1,9 +1,12 @@
-"""Read-only web server for one realm's board. stdlib only.
+"""Web server for one realm's board. stdlib only.
 
 * binds 127.0.0.1 -- reach it through ``ssh -L``; nothing is exposed publicly
 * rejects requests whose Host/Origin isn't loopback (blocks DNS rebinding)
 * allows CORS from loopback origins so one browser tab can merge several
   realms' hubs (each forwarded to a different local port)
+* one write: a person confirming or dismissing report items
+  (``POST /api/research/decisions``), accepted only from the board's own pages
+  (this hub's port, its peers, the realms' view ports) with a custom header
 * pushes state over Server-Sent Events when the DB or the item cards change
 * bounded: socket timeouts, a cap on concurrent SSE streams, notifications on
   their own thread
@@ -34,6 +37,7 @@ RECOMPUTE_S = 15.0
 MAX_SSE = 16
 MAX_CONNECTIONS = 64
 SOCKET_TIMEOUT_S = 30
+MAX_WRITE = 32 * 1024
 
 
 class BoundedHTTPServer(ThreadingHTTPServer):
@@ -155,6 +159,94 @@ def make_handler(board: Board):
                 self.send_error(403, "loopback only")
                 return False
             return True
+
+        def _write_origin(self) -> str:
+            """The Origin a write may come from: a board page, i.e. a loopback
+            origin on this hub's port, a peer hub's port or a realm's view port.
+            Other local pages (dev servers, the pixel office) may read, not write."""
+            origin = self.headers.get("Origin") or ""
+            u = urlsplit(origin)
+            if u.scheme != "http" or (u.hostname or "").lower() not in LOOPBACK:
+                return ""
+            try:
+                port = u.port
+            except ValueError:
+                return ""
+            cfg = board.cfg
+            ports = {self.server.server_address[1], cfg.hub.port}
+            ports |= {urlsplit(x).port for x in cfg.hub.peers if isinstance(x, str)}
+            ports |= {r.view_port for r in cfg.realms.values() if r.view_port}
+            return origin if port in ports else ""
+
+        def _json(self, code: int, body: dict):
+            data = json.dumps(body, ensure_ascii=False, allow_nan=False).encode()
+            if self.command == "POST" and not getattr(self, "_body_read", False):
+                # refused before reading: drain a modest body so the client gets this
+                # reply instead of a TCP reset (the connection is closed afterwards)
+                try:
+                    n = int(self.headers.get("Content-Length") or 0)
+                except ValueError:
+                    n = 0
+                if 0 < n <= 4 * MAX_WRITE and not self.headers.get("Transfer-Encoding") and not self.headers.get("Expect"):
+                    try:
+                        self.connection.settimeout(1.0)
+                        self.rfile.read(n)
+                    except OSError:
+                        pass
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            origin = self._write_origin()
+            if origin:
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_OPTIONS(self):  # CORS preflight for the one write endpoint
+            if not self._guard():
+                return
+            origin = self._write_origin()
+            if urlsplit(self.path).path != "/api/research/decisions" or not origin:
+                self.send_error(403, "not allowed")
+                return
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+            self.send_header("Access-Control-Allow-Methods", "POST")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-WD-Write")
+            self.send_header("Access-Control-Max-Age", "600")
+            self.end_headers()
+
+        def do_POST(self):
+            if not self._guard():
+                return
+            self.close_connection = True
+            url = urlsplit(self.path)
+            if url.path != "/api/research/decisions":
+                return self._json(404, {"ok": False})
+            if not self._write_origin() or self.headers.get("X-WD-Write") != "1" \
+                    or not (self.headers.get("Content-Type") or "").startswith("application/json"):
+                return self._json(403, {"ok": False, "error": "forbidden"})
+            if self.headers.get("Transfer-Encoding"):
+                return self._json(400, {"ok": False, "error": "chunked bodies not accepted"})
+            try:
+                n = int(self.headers.get("Content-Length") or "")
+            except ValueError:
+                return self._json(411, {"ok": False, "error": "Content-Length required"})
+            if not 0 < n <= MAX_WRITE:
+                return self._json(413, {"ok": False, "error": "body too large"})
+            proj = board.research.get((parse_qs(url.query).get("name") or [""])[0])
+            if not proj:
+                return self._json(404, {"ok": False, "error": "no such research source"})
+            try:
+                self._body_read = True
+                req = json.loads(self.rfile.read(n))
+                items = proj.update_register(req)
+            except (ValueError, TypeError, json.JSONDecodeError) as e:
+                return self._json(400, {"ok": False, "error": str(e)[:200]})
+            board._recompute()  # the summary's fingerprint changes; other open pages re-read
+            return self._json(200, {"ok": True, "items": items})
 
         def _cors(self):
             origin = self.headers.get("Origin")

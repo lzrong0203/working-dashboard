@@ -1073,5 +1073,152 @@ class GithubAndDecisionsTest(unittest.TestCase):
             self.assertEqual(cfgmod.load(p).hub.research[0].repo, "o/r.x")
 
 
+class ConfirmedItemsTest(unittest.TestCase):
+    def test_register_ops(self):
+        from wd.research import read_register, update_register
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "x.decisions.json"
+            items = update_register(path, {"op": "confirm", "kind": "decision", "text": "門檻定多少", "who": "主管",
+                                           "from_text": "AI 寫的門檻", "cites": ["REG-20260101-aaaa", "../etc"]})
+            a = items[0]
+            self.assertEqual((a["status"], a["source"], a["cites"]), ("confirmed", "report", ["REG-20260101-aaaa"]))
+            self.assertEqual(oct(path.stat().st_mode & 0o777), "0o600")
+            # confirming the same generated item again updates it instead of adding a second entry
+            items = update_register(path, {"op": "confirm", "kind": "settled", "text": "門檻 66%", "from_text": "AI 寫的門檻"})
+            self.assertEqual((len(items), items[0]["kind"], len(items[0]["history"])), (1, "settled", 1))
+            items = update_register(path, {"op": "dismiss", "from_text": "編出來的待決"})
+            self.assertEqual(items[1]["status"], "dismissed")
+            items = update_register(path, {"op": "confirm", "kind": "decision", "text": "人加的：排程", "who": "x" * 500})
+            self.assertEqual((items[2]["source"], len(items[2]["who"])), ("human", 80))
+            items = update_register(path, {"op": "update", "id": items[2]["id"], "kind": "settled", "detail": "11/20 定案"})
+            self.assertEqual((items[2]["kind"], items[2]["detail"], items[2]["text"]), ("settled", "11/20 定案", "人加的：排程"))
+            for bad in ({"op": "confirm", "kind": "decision", "text": ""}, {"op": "confirm", "kind": "maybe", "text": "x"},
+                        {"op": "update", "id": "h-nope-0000"}, {"op": "drop"}, {"op": "update", "id": items[0]["id"], "status": "gone"}, []):
+                with self.assertRaises(ValueError):
+                    update_register(path, bad)
+            items = update_register(path, {"op": "remove", "id": items[1]["id"]})
+            self.assertEqual(len(items), 2)
+            self.assertEqual(read_register(path), items)
+            path.write_text('{"items": [{"id": "../../x", "kind": "decision", "status": "confirmed", "text": "t"}, 5]}')
+            self.assertEqual(read_register(path), [])  # malformed entries are dropped, not trusted
+
+    def test_page_data_marks_generated_items(self):
+        from wd.research import ResearchProject, ResearchSource, same_item, update_register
+        self.assertTrue(same_item("評估標準要怎麼定？", "評估標準怎麼定"))
+        self.assertFalse(same_item("要不要追加預算", "要不要向合作方索取設定檔"))
+        self.assertFalse(same_item("定案", "定案了嗎"))  # too short to match loosely
+        with tempfile.TemporaryDirectory() as d:
+            reg = Path(d) / "registry"
+            reg.mkdir()
+            (reg / "REG-20260101-aaaa.json").write_text(json.dumps({"id": "REG-20260101-aaaa", "ts": "2026-01-01"}))
+            ov = Path(d) / "data" / "research"
+            ov.mkdir(parents=True)
+            (ov / "demo.report.json").write_text(json.dumps({"title": "t", "decisions": [
+                {"decision": "目標條件要不要調整：接受先做前處理"}, {"decision": "要不要追加預算"}],
+                "settled": [{"item": "預設設定", "decided": "不改回"}]}, ensure_ascii=False))
+            proj = ResearchProject(ResearchSource("demo", reg), Path(d) / "data")
+            fp = proj.data()["fp"]
+            update_register(ov / "demo.decisions.json", {"op": "confirm", "kind": "decision", "text": "要不要接受先做前處理",
+                                                         "from_text": "目標條件要不要調整：接受先做前處理"})
+            update_register(ov / "demo.decisions.json", {"op": "dismiss", "kind": "settled", "from_text": "預設設定"})
+            data = proj.data()
+            self.assertNotEqual(data["fp"], fp)  # the register is part of the fingerprint
+            dec, st = data["report"]["decisions"], data["report"]["settled"]
+            self.assertEqual(dec[0]["reg"]["status"], "confirmed")
+            self.assertNotIn("reg", dec[1])
+            self.assertEqual(st[0]["reg"]["status"], "dismissed")
+            self.assertEqual(len(data["register"]), 2)
+
+    def test_generator_leaves_checked_items_alone(self):
+        from wd.research import ResearchSource, update_register
+        from wd.research_propose import propose
+        with tempfile.TemporaryDirectory() as d:
+            reg = Path(d) / "registry"
+            reg.mkdir()
+            b = {"id": "REG-20260102-bbbb", "ts": "2026-01-02", "title": "門檻", "status": "pass",
+                 "result": {"verdict": "PASS", "cv": "12 個公開實測材料上誤差 1.5 倍", "adopt": "達成門檻尚未定義，待主管決定"}}
+            (reg / f"{b['id']}.json").write_text(json.dumps(b, ensure_ascii=False))
+            ov = Path(d) / "data" / "research"
+            update_register(ov / "demo.decisions.json", {"op": "confirm", "kind": "decision", "text": "門檻要訂多少", "detail": "66% 或 80%"})
+            update_register(ov / "demo.decisions.json", {"op": "dismiss", "kind": "settled", "from_text": "編出來的定案"})
+            f = {"statement": "誤差 1.5 倍", "basis": "12 個公開實測材料", "so_what": "可用", "change_if": "變差",
+                 "cites": [{"id": b["id"], "role": "supports", "quote": "12 個公開實測材料上誤差 1.5 倍"}]}
+            answers = {
+                "請逐筆整理": {"records": [{"id": b["id"], "name": "n", "why": "w", "result": "r", "level": 3, "level_quote": "公開實測材料",
+                                       "n": 12, "edges": []}]},
+                "請整理成兩層": {"goals": [{"id": "g-main", "title": "主目標", "bar": "2 倍內"}],
+                           "questions": [{"id": "q-route", "parent": "g-main", "kind": "route", "title": "路線", "members": [b["id"]]}]},
+                "請對每條途徑": {"goal_answer": {"text": "接近", "cites": [b["id"]]}, "questions": [{
+                    "id": "q-route", "holds": [], "fails": [], "unknown": [], "stuck": "none", "next": "", "decision": "", "findings": [f]}]},
+                # answered only when the prompt carries what the person already checked
+                "已確認的待決定：\n- 門檻要訂多少：66% 或 80%": {
+                    "title": "進度", "one_page": {"goal": "g", "success": "s", "answer": "a", "why_hard": "w", "numbers": []},
+                    "learned": [{"headline": "誤差 1.5 倍", "basis": "公開實測", "so_what": "可用", "findings": ["f-route-1"]}],
+                    "routes": [], "unknowns": [], "next_weeks": [], "glossary": [],
+                    "decisions": [{"decision": "門檻要訂多少？", "options": "", "recommendation": "", "who": "", "by_when": "",
+                                   "findings": ["f-route-1"], "evidence": {"id": b["id"], "quote": "尚未定義，待主管決定"}},
+                                  {"decision": "要不要追加預算", "options": "", "recommendation": "", "who": "", "by_when": "",
+                                   "findings": [], "evidence": {"id": "", "quote": ""}}],
+                    "settled": [{"item": "編出來的定案", "decided": "x", "findings": [], "evidence": {"id": "", "quote": ""}}]},
+            }
+            old = os.environ.get("WD_CLAUDE")
+            os.environ["WD_CLAUDE"] = _fake_claude(d, answers)
+            try:
+                path = propose(ResearchSource("demo", reg), Path(d) / "data", Path(d), log=lambda *a: None)
+            finally:
+                os.environ.pop("WD_CLAUDE") if old is None else os.environ.__setitem__("WD_CLAUDE", old)
+            rep = json.loads(path.with_name(path.stem + ".report.json").read_text())
+            self.assertEqual([x["decision"] for x in rep["decisions"]], ["要不要追加預算"])  # the confirmed one isn't generated again
+            self.assertEqual(rep["settled"], [])  # the dismissed one doesn't come back
+            self.assertEqual(len(json.loads((ov / "demo.decisions.json").read_text())["items"]), 2)  # the run never writes the register
+
+    def test_write_endpoint_accepts_only_board_pages(self):
+        import http.client
+        import threading as th
+        from types import SimpleNamespace
+
+        from wd.hub.server import BoundedHTTPServer, make_handler
+        from wd.research import ResearchProject, ResearchSource
+        with tempfile.TemporaryDirectory() as d:
+            reg = Path(d) / "registry"
+            reg.mkdir()
+            proj = ResearchProject(ResearchSource("demo", reg), Path(d) / "data")
+            cfg = SimpleNamespace(hub=SimpleNamespace(port=8740, peers=["http://127.0.0.1:8741"]), realms={})
+            board = SimpleNamespace(research={"demo": proj}, cfg=cfg, _recompute=lambda: None)
+            httpd = BoundedHTTPServer(("127.0.0.1", 0), make_handler(board))
+            port = httpd.server_address[1]
+            th.Thread(target=httpd.serve_forever, daemon=True).start()
+            try:
+                def req(method, body=None, headers=None, path="/api/research/decisions?name=demo"):
+                    c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                    data = json.dumps(body).encode() if body is not None else None
+                    c.request(method, path, body=data, headers={"Host": f"127.0.0.1:{port}", **(headers or {})})
+                    r = c.getresponse()
+                    out = (r.status, r.getheader("Access-Control-Allow-Origin"), r.read())
+                    c.close()
+                    return out
+                ok = {"Origin": "http://localhost:8741", "X-WD-Write": "1", "Content-Type": "application/json"}
+                body = {"op": "confirm", "kind": "decision", "text": "門檻要訂多少"}
+                self.assertEqual(req("POST", body, {**ok, "Origin": "http://127.0.0.1:3100"})[0], 403)  # another local page
+                self.assertEqual(req("POST", body, {**ok, "Origin": "https://evil.example"})[0], 403)
+                self.assertEqual(req("POST", body, {k: v for k, v in ok.items() if k != "X-WD-Write"})[0], 403)
+                self.assertEqual(req("POST", body, {k: v for k, v in ok.items() if k != "Origin"})[0], 403)  # curl without Origin
+                self.assertEqual(req("POST", body, {**ok, "Content-Type": "text/plain"})[0], 403)
+                self.assertEqual(req("POST", body, {**ok, "Host": "evil.example"})[0], 403)  # DNS rebinding
+                self.assertEqual(req("POST", {"op": "confirm", "kind": "decision", "text": "x" * 40000}, ok)[0], 413)
+                self.assertEqual(req("POST", {"op": "nope"}, ok)[0], 400)
+                self.assertEqual(req("POST", body, ok, path="/api/research/decisions?name=other")[0], 404)
+                self.assertEqual(req("OPTIONS", None, {"Origin": "http://127.0.0.1:3100"})[0], 403)
+                pre = req("OPTIONS", None, {"Origin": "http://localhost:8741", "Access-Control-Request-Method": "POST"})
+                self.assertEqual(pre[:2], (204, "http://localhost:8741"))
+                status, allow, raw = req("POST", body, {**ok, "Origin": f"http://localhost:{port}"})  # the hub's own page
+                self.assertEqual((status, allow), (200, f"http://localhost:{port}"))
+                self.assertEqual(json.loads(raw)["items"][0]["text"], "門檻要訂多少")
+                self.assertEqual(proj.data()["register"][0]["text"], "門檻要訂多少")
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+
+
 if __name__ == "__main__":
     unittest.main()

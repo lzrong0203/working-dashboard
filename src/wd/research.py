@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import threading
 from dataclasses import dataclass, field
@@ -366,6 +367,136 @@ def clean_report(rep) -> dict | None:
     return out
 
 
+# ---- what a person confirmed --------------------------------------------------------
+# The meeting report is regenerated whenever the records change, and each run
+# words things a little differently. Items a person has checked live in their own
+# file beside the overlay (<name>.decisions.json), written only through the hub's
+# write endpoint, never by the generator:
+#   confirmed -- shown in the report as 人已確認, exactly as the person worded it;
+#   dismissed -- the generated item was wrong; later runs must not bring it back.
+REG_KINDS = ("decision", "settled")
+REG_STATUS = ("confirmed", "dismissed")
+REG_TEXT = {"text": 300, "detail": 600, "who": 80, "by_when": 60, "note": 600, "from_text": 300}
+MAX_REG = 300
+_PUNCT_RE = re.compile(r"[\W_]+", re.UNICODE)
+
+
+def register_path(overlay_path: Path) -> Path:
+    return overlay_path.with_name(overlay_path.stem + ".decisions.json")
+
+
+def _reg_item(x) -> dict | None:
+    if not isinstance(x, dict) or x.get("kind") not in REG_KINDS or x.get("status") not in REG_STATUS:
+        return None
+    out = {"id": _flat(x.get("id"), 40), "kind": x["kind"], "status": x["status"],
+           "source": "report" if x.get("source") == "report" else "human", "at": _flat(x.get("at"), 40)}
+    out.update({k: _flat(x.get(k), n) for k, n in REG_TEXT.items()})
+    out["cites"] = [c for c in x.get("cites", []) if isinstance(c, str) and RID.fullmatch(c)][:12] if isinstance(x.get("cites"), list) else []
+    ev = x.get("evidence")
+    if isinstance(ev, dict) and isinstance(ev.get("id"), str) and RID.fullmatch(ev["id"]) and ev.get("quote"):
+        out["evidence"] = {"id": ev["id"], "quote": _flat(ev["quote"], 300)}
+    hist = x.get("history")
+    out["history"] = [{k: _flat(h.get(k), 300) for k in ("at", "kind", "status", "text", "detail")}
+                      for h in hist if isinstance(h, dict)][-10:] if isinstance(hist, list) else []
+    return out if re.fullmatch(r"h-[0-9a-z-]{4,36}", out["id"]) and (out["text"] or out["from_text"]) else None
+
+
+def read_register(path: Path) -> list[dict]:
+    try:
+        if path.stat().st_size > MAX_FILE:
+            return []
+        d = json.loads(path.read_text(encoding="utf-8"), parse_constant=_no_nan)
+    except (FileNotFoundError, ValueError, OSError):
+        return []
+    items = d.get("items") if isinstance(d, dict) else None
+    return [y for y in map(_reg_item, items if isinstance(items, list) else []) if y][:MAX_REG]
+
+
+def same_item(a: str, b: str) -> bool:
+    """Is a newly generated report item the one a person already confirmed or
+    dismissed? Runs reword items, so exact text can't be required; too loose a
+    match would hide a genuinely new item behind an old one."""
+    A, B = _PUNCT_RE.sub("", a or "").lower(), _PUNCT_RE.sub("", b or "").lower()
+    if not A or not B:
+        return False
+    if A == B:
+        return True
+    if min(len(A), len(B)) < 4:
+        return False
+    sa, sb = set(A), set(B)
+    return len(sa & sb) / len(sa | sb) >= 0.6
+
+
+def match_register(text: str, items: list[dict]) -> dict | None:
+    """The register entry a generated item corresponds to: its exact original
+    wording first, then a close rewording of either wording."""
+    norm = _PUNCT_RE.sub("", text or "").lower()
+    for r in items:
+        if norm and norm == _PUNCT_RE.sub("", r["from_text"]).lower():
+            return r
+    return next((r for r in items if same_item(text, r["from_text"]) or same_item(text, r["text"])), None)
+
+
+def update_register(path: Path, req: dict) -> list[dict]:
+    """Apply one change from the page. ops: confirm (from a generated item, or a
+    new one), dismiss (a generated item is wrong), update (edit an entry, e.g.
+    a decision that has since been made), remove (undo). Raises ValueError on a
+    bad request; returns the new list."""
+    from datetime import datetime
+
+    from wd.fileio import locked, write_json
+
+    if not isinstance(req, dict):
+        raise ValueError("bad request")
+    op = req.get("op")
+    now = datetime.now().astimezone().isoformat(timespec="seconds")
+    fields = {k: _flat(req.get(k), n) for k, n in REG_TEXT.items() if k in req}
+    kind = req.get("kind")
+    if kind is not None and kind not in REG_KINDS:
+        raise ValueError("kind must be decision or settled")
+    with locked(path):
+        items = read_register(path)
+        if op in ("confirm", "dismiss"):
+            if op == "confirm" and not fields.get("text"):
+                raise ValueError("text required")
+            if op == "dismiss" and not fields.get("from_text"):
+                raise ValueError("from_text required")
+            same = next((r for r in items if fields.get("from_text") and r["from_text"] == fields["from_text"]), None)
+            entry = same or {"id": f"h-{datetime.now().strftime('%Y%m%d')}-{os.urandom(3).hex()}", "history": [],
+                             "source": "report" if fields.get("from_text") else "human"}
+            if same:
+                entry["history"] = [*entry["history"], {k: entry.get(k, "") for k in ("at", "kind", "status", "text", "detail")}][-10:]
+            entry.update({**{k: "" for k in REG_TEXT}, **({k: v for k, v in same.items() if k in REG_TEXT} if same else {}), **fields,
+                          "kind": kind or (same or {}).get("kind") or "decision",
+                          "status": "confirmed" if op == "confirm" else "dismissed", "at": now})
+            entry["cites"] = [c for c in req.get("cites", []) if isinstance(c, str) and RID.fullmatch(c)][:12] if isinstance(req.get("cites"), list) else entry.get("cites", [])
+            if isinstance(req.get("evidence"), dict):
+                entry["evidence"] = req["evidence"]
+            if not same:
+                if len(items) >= MAX_REG:
+                    raise ValueError("too many entries")
+                items.append(entry)
+        elif op in ("update", "remove"):
+            entry = next((r for r in items if r["id"] == req.get("id")), None)
+            if not entry:
+                raise ValueError("no such entry")
+            if op == "remove":
+                items.remove(entry)
+            else:
+                status = req.get("status", entry["status"])
+                if status not in REG_STATUS:
+                    raise ValueError("bad status")
+                entry["history"] = [*entry["history"], {k: entry.get(k, "") for k in ("at", "kind", "status", "text", "detail")}][-10:]
+                entry.update({**fields, "kind": kind or entry["kind"], "status": status, "at": now})
+                if entry["status"] == "confirmed" and not entry["text"]:
+                    raise ValueError("text required")
+        else:
+            raise ValueError("unknown op")
+        clean = [y for y in map(_reg_item, items) if y]
+        write_json(path, {"items": clean})
+    return clean
+
+
 class ResearchProject:
     """One configured source; re-reads only when its files change."""
 
@@ -402,7 +533,7 @@ class ResearchProject:
     def fingerprint(self) -> str:
         h = hashlib.sha1()
         for p in [*self._files(), self.overlay_path, self.overlay_path.with_name(self.overlay_path.stem + ".report.json"),
-                  github_cache_path(self.overlay_path)]:
+                  github_cache_path(self.overlay_path), register_path(self.overlay_path)]:
             try:
                 st = p.stat()
                 h.update(f"{p.name}:{st.st_mtime_ns}:{st.st_ctime_ns}:{st.st_ino}:{st.st_size};".encode())
@@ -482,6 +613,13 @@ class ResearchProject:
             pass
         except Exception as e:
             errors.append(f"report: {e}")
+        register = read_register(register_path(self.overlay_path))
+        if report:  # mark generated items a person already confirmed or dismissed
+            for sec, key in (("decisions", "decision"), ("settled", "item")):
+                for x in report.get(sec, []):
+                    m = match_register(x.get(key, ""), register)
+                    if m:
+                        x["reg"] = {"id": m["id"], "status": m["status"], "kind": m["kind"]}
         # field edges pointing at unknown ids are kept out of the graph
         for r in records:
             r["edges"] = [e for e in r["edges"] if e["from"] in ids and e["to"] in ids]
@@ -510,6 +648,7 @@ class ResearchProject:
             "goals": goals,
             "questions": questions,
             "report": report,
+            "register": register,
             "edges": edges,
             "github": github,
             "errors": errors[:50],
@@ -539,6 +678,12 @@ class ResearchProject:
             result = _flat(res, 20000)
         return {"id": rid, "why": _flat(g("why"), 20000), "hypothesis": _flat(g("hypothesis"), 20000),
                 "lose": _flat(g("lose"), 20000), "expected": _flat(g("expected"), 20000), "result": result}
+
+    def update_register(self, req: dict) -> list[dict]:
+        out = update_register(register_path(self.overlay_path), req)
+        with self._lock:
+            self._fp = ""  # the page re-reads right after a change
+        return out
 
     def summary(self) -> dict:
         d = self.data()

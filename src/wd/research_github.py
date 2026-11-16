@@ -20,18 +20,17 @@ GitHub.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import re
 import shutil
 import subprocess
-import tempfile
 import threading
 import time
-from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
+
+from wd.fileio import locked, write_json
 
 REFRESH = 3600  # seconds between automatic refreshes
 BULK = 5  # a PR changing more record files than this is a bulk change, not about one record
@@ -79,30 +78,6 @@ def read_cache(path: Path, repo: str | None = None) -> dict:
     return d
 
 
-@contextmanager
-def _locked(path: Path):
-    """One writer at a time per cache, across processes (the hub and the CLI)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path.with_name(f".{path.name}.lock"), "w") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(fh, fcntl.LOCK_UN)
-
-
-def _write(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
-
 
 def _clean_pr(p: dict) -> dict | None:
     if not isinstance(p, dict) or not isinstance(p.get("number"), int):
@@ -148,13 +123,13 @@ def fetch(repo: str, path: Path, timeout: int = 300) -> dict:
                 if full is not None:
                     x["files"], x["files_cut"] = full[:MAX_FILES_PR], len(full) > MAX_FILES_PR
         out = {"repo": repo, "fetched_at": now, "error": "", "prs": prs}
-        with _locked(path):
-            _write(path, out)
+        with locked(path):
+            write_json(path, out)
     except Exception as e:
         err = f"{type(e).__name__}: {e}"[:300]
-        with _locked(path):  # re-read under the lock: a newer success must not be rolled back
+        with locked(path):  # re-read under the lock: a newer success must not be rolled back
             out = {**read_cache(path, repo), "repo": repo, "error": err, "error_at": now}
-            _write(path, out)
+            write_json(path, out)
     return out
 
 

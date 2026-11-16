@@ -693,3 +693,26 @@ sup .fn { font: inherit; font-size: .68rem; background: none; border: 0; padding
 .prmore summary { display: inline; cursor: pointer; color: var(--muted); list-style: none; }
 .prmore[open] summary { margin-right: .3rem; }
 .ghfresh .fwarn { display: inline; }
+
+/* 人已確認: confirming, dismissing and adding report items */
+.regbar { display: inline-flex; flex-wrap: wrap; gap: .3rem; margin-top: .3rem; }
+.regbar button, .regadd button, .regx button { font: inherit; font-size: .7rem; padding: .1rem .5rem; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
+.regbar button:hover, .regadd button:hover, .regx button:hover { border-color: var(--accent); }
+.regok { font-size: .7rem; color: var(--idle); border: 1px solid currentColor; border-radius: 999px; padding: 0 .4rem; white-space: nowrap; }
+tr.regdone td:first-child, li.regdone { box-shadow: inset 3px 0 0 var(--idle); padding-left: .55rem; }
+li.regdone, li.regtodo, li.regrow { margin-bottom: .45rem; list-style: none; }
+.regadd { margin: .4rem 0 0; }
+.regx { margin-top: .4rem; font-size: .78rem; }
+.regx summary { cursor: pointer; color: var(--muted); }
+.regform { display: grid; gap: .45rem; padding: .6rem .7rem; margin: .3rem 0; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; }
+.regform label { display: grid; gap: .2rem; font-size: .74rem; color: var(--muted); }
+.regform input, .regform textarea, .regform select { font: inherit; font-size: .85rem; color: var(--ink); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 6px; padding: .3rem .45rem; min-width: 0; }
+.regform .rgk { max-width: 12rem; }
+.regform .rgrow { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
+.rgbtns { display: flex; flex-wrap: wrap; gap: .45rem; align-items: center; }
+.rgbtns button { font: inherit; font-size: .8rem; border-radius: 6px; padding: .3rem .8rem; cursor: pointer; border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
+.rgbtns button[type=submit] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.rgbtns button[disabled] { opacity: .6; cursor: default; }
+@media print { .regbar, .regadd, .regx { display: none; } }
