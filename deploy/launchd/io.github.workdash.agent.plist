@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- ~/Library/LaunchAgents/io.github.workdash.agent.plist  (replace __HOME__)
+<!-- ~/Library/LaunchAgents/io.github.workdash.agent.plist  (replace __HOME__; install wd-launch first, see that file)
      launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/io.github.workdash.agent.plist -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key><string>io.github.workdash.agent</string>
   <key>ProgramArguments</key>
-  <array><string>__HOME__/.local/bin/wd</string><string>agent</string></array>
+  <array><string>__HOME__/.local/share/wd/bin/wd-launch</string><string>agent</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>15</integer>

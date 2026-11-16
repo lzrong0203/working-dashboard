@@ -1,0 +1,9 @@
+#!/bin/sh
+# Stable entry point for the launchd jobs. Install once:
+#   install -m 755 deploy/launchd/wd-launch ~/.local/share/wd/bin/wd-launch
+#
+# macOS records the program each LaunchAgent starts and posts "Background Items
+# Added" whenever that file changes. `uv tool install --reinstall` rewrites
+# ~/.local/bin/wd on every upgrade, so pointing launchd at it re-posts the
+# notification each time. This file never changes, so upgrades stay silent.
+exec "${HOME:?}/.local/bin/wd" "$@"

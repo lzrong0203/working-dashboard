@@ -85,6 +85,10 @@ wd view                 # on your laptop: forwards every realm's hub over ssh, o
 wd status               # same data in the terminal
 ```
 
+On macOS, run the agent and hub from launchd through `deploy/launchd/wd-launch`
+(install it once to `~/.local/share/wd/bin/`). It never changes, so upgrading
+wd doesn't trigger the "Background Items Added" notification again.
+
 Record experiments from inside an agent session (the session is attached
 automatically):
 
