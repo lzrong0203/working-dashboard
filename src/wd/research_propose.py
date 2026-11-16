@@ -158,7 +158,7 @@ C_PROMPT = """目標：{goal}（怎樣算成功：{bar}）
 - stuck：卡在哪，只能是 method（方法還不可信）、measure（在等量測）、external（在等外部決定或資料）、not_started（還沒開始）、closed（已結案）、none（沒有卡住）。
 - next：下一步（一句），decision：需要研究者或主管決定的事（沒有就給空字串）。
 - findings：0–3 條真正學到的事（會改變下一步、或打開或關掉一條路的才寫）。每條：
-  statement 一句可被反駁的結論（只能有一個數字，用「幾倍」而不是 dex 或 R²，數字後面說跟什麼比）；
+  statement 一句可被反駁的結論（最多一個主要數字，數字照原文寫，例如「從 47% 提到 66%」；原文本來就用倍數時才寫幾倍；不要自己換算，也不用 dex、R² 這類術語；數字後面說跟什麼比）；
   basis 憑什麼（跟什麼比、幾{unit}）；so_what 所以要怎樣；change_if 什麼結果會推翻它；
   cites 每個根據的登記：role 是 supports（支持這句結論）、against（反對）、limits（限制適用範圍），quote 從該登記摘要的「結果」或「為什麼」逐字複製。
 最後 goal_answer：這個目標目前的整體答案（一句，60 字內）與根據。
@@ -166,7 +166,7 @@ C_PROMPT = """目標：{goal}（怎樣算成功：{bar}）
 
 M_PROMPT = """請把下面的研究整理寫成一份 10–15 分鐘的會議報告，聽眾是主管和同事，不熟悉內部術語。
 規則：
-- 不要出現內部實驗代號；一句最多一個數字；用「幾倍」，不用 dex、R² 等術語（真的要用就放進 glossary 解釋）；每個數字後面說跟什麼比。
+- 不要出現內部實驗代號；一句最多一個主要數字，照結論清單裡的寫法，不要自己換算成倍數；不用 dex、R² 等術語（真的要用就放進 glossary 解釋）；每個數字後面說跟什麼比。
 - 只能使用下面「結論清單」裡的內容；learned 與 unknowns 一定要列出所根據的結論 id（findings 欄位），不得新增沒有出處的說法。
 - 把握程度不要自己寫，報告產生器會依結論 id 自動帶出。
 - learned 選 3–5 條「會改變下一步、或打開或關掉一條路線」的；routes 列主命題的各條途徑；unknowns 最多 3 條可能翻盤的；
@@ -315,7 +315,8 @@ def numbers_ok(text: str, sources: list[str]) -> list[str]:
     cited records (record ids and timestamps don't count as evidence)."""
     blob = _NOT_EVIDENCE.sub(" ", " ".join(sources))
     have = set(re.findall(r"(?<![\d.])\d+(?:\.\d+)?(?![\d.])", blob))
-    return [x for x in NUM.findall(text or "") if x not in have]
+    text = re.sub(r"(?<![\d.])\d{1,2}/\d{1,2}(?![\d.])", " ", text or "")  # a date like 10/06 isn't a figure
+    return [x for x in NUM.findall(text) if x not in have]
 
 
 def confidence(cites: list[dict], recs: dict, src: ResearchSource | None = None) -> str:
@@ -346,7 +347,7 @@ def confidence(cites: list[dict], recs: dict, src: ResearchSource | None = None)
     return label + ("；有反證" if against else "")
 
 
-def checks(text: str, cites: list[dict], recs: dict, raw_text: dict, forbidden: list[str]) -> list[str]:
+def checks(text: str, cites: list[dict], recs: dict, raw_text: dict, forbidden: list[str], word: str = "登記") -> list[str]:
     warn = []
     srcs = [raw_text.get(c["id"], "") for c in cites]
     miss = numbers_ok(text, srcs)
@@ -356,8 +357,11 @@ def checks(text: str, cites: list[dict], recs: dict, raw_text: dict, forbidden: 
         if w and w in text:
             warn.append(f"用了不宣稱的詞「{w}」")
     sup = [recs[c["id"]] for c in cites if c.get("role") == "supports" and c["id"] in recs]
-    if sup and all(r.get("outcome") != "pass" for r in sup) and re.search(r"成立|證明|較好|更好", text):
-        warn.append("支持的登記沒有一筆通過，卻用了「成立／證明／較好」")
+    # "沒有比較好" is the opposite of a claim; only flag the words when not negated just before
+    claim = next((m.group(0) for m in re.finditer(r"成立|證明|較好|更好", text or "")
+                  if not re.search(r"[沒不未無非]", (text or "")[max(0, m.start() - 4):m.start()])), "")
+    if sup and all(r.get("outcome") != "pass" for r in sup) and claim:
+        warn.append(f"支持的{word}沒有一筆通過，卻用了「{claim}」")
     if CODE.search(text or ""):
         warn.append("含內部代號")
     return warn
@@ -578,7 +582,7 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
                             "id": f"f-{q['id'][2:]}-{k + 1}", "statement": st_, "basis": basis,
                             "so_what": _flat(f.get("so_what"), 200), "change_if": _flat(f.get("change_if"), 200), "cites": cites,
                             "confidence": confidence(cites, enriched, src),
-                            "warnings": checks(f"{st_} {basis}", cites, enriched, raw_text, forbidden) + ([] if cites else ["沒有可驗證的出處"]),
+                            "warnings": checks(f"{st_} {basis}", cites, enriched, raw_text, forbidden, "紀錄" if src.reconstructed else "登記") + ([] if cites else ["沒有可驗證的出處"]),
                             "by": "ai"})
                     q["findings"] = findings[:3]
                 overlay["claims_fp"] = data.get("records_fp") or proj.records_fingerprint()
@@ -627,7 +631,7 @@ def propose(src: ResearchSource, data_dir: Path, config_dir: Path, model: str = 
                 text = f"{x.get('headline', '')} {x.get('basis', '')}"
                 report["learned"].append({"headline": _flat(x.get("headline"), 160), "basis": _flat(x.get("basis"), 300),
                                           "so_what": _flat(x.get("so_what"), 200), "findings": fids, "cites": cites, "confidence": conf,
-                                          "warnings": checks(text, [{"id": c, "role": "supports"} for c in cites], enriched, raw_text, forbidden)
+                                          "warnings": checks(text, [{"id": c, "role": "supports"} for c in cites], enriched, raw_text, forbidden, "紀錄" if src.reconstructed else "登記")
                                           + ([] if fids else ["沒有對應的結論，不應放進報告"])})
             def qmatch(v):  # the model may answer with a title instead of an id
                 v = str(v or "")

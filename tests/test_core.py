@@ -805,6 +805,14 @@ class CodexRound2Test(unittest.TestCase):
         self.assertEqual(confidence([{"id": "y", "role": "supports"}], recs2, src), "初步、樣本小（少於 20 題不裁定）")
         self.assertEqual(confidence([], recs2, src), "沒有直接支持的紀錄")
 
+    def test_claim_words_respect_negation_and_dates_are_not_figures(self):
+        from wd.research_propose import checks, numbers_ok
+        recs = {"a": {"outcome": "fail"}}
+        cites = [{"id": "a", "role": "supports"}]
+        self.assertEqual(checks("測試版整體沒有比較好", cites, recs, {"a": ""}, [], "紀錄"), [])
+        self.assertEqual(checks("測試版比較好", cites, recs, {"a": ""}, [], "紀錄"), ["支持的紀錄沒有一筆通過，卻用了「較好」"])
+        self.assertEqual(numbers_ok("10/06 起 4 天沒跑", ["2026-10-06 起，4 天都沒有跑"]), [])
+
     def test_numbers_are_whole_tokens(self):
         from wd.research_propose import numbers_ok
         self.assertEqual(numbers_ok("誤差 12 倍、1.5 倍、3 倍", ["共 312 個，11.50 分，REG-20260103-abcd"]), ["12", "1.5", "3"])
