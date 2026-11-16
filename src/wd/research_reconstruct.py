@@ -132,9 +132,11 @@ def _verified_date(r: dict, text: str, commits: list[tuple[str, str]]) -> str:
     if not m:
         return ""
     forms = {date, f"{int(m.group(2))}/{int(m.group(3))}", f"{m.group(2)}/{m.group(3)}"}
-    if any(f in text for f in forms):
-        return date
     quote = _norm(_flat(r.get("date_quote"), 200))
+    # the quoted passage itself must carry the date: a date merely somewhere in
+    # the section may belong to another round
+    if quote and quote in _norm(text) and any(_norm(f) in quote for f in forms):
+        return date
     for d, subj in commits:  # a commit of that day whose subject the model quoted
         if d == date and quote and len(quote) >= 6 and quote in _norm(subj):
             return date
