@@ -345,7 +345,7 @@ function lane(g, D) {
   // a very busy day compresses its stack instead of making the lane huge
   const most = Math.max(1, ...perDay.values()), rows = Math.min(most, 8), step = most > 8 ? (8 * 9) / most : 9;
   return `
-  <div class="lane">
+  <div class="rlane">
     <button class="lhead" data-group="${esc(g.id)}">
       <span class="lt">${q.kind ? `<i class="kind k-${esc(q.kind)}">${esc(KIND[q.kind] || q.kind)}</i>` : ""}${esc(bare(g.title, q.kind))}</span>
       ${q.state ? `<span class="st s-${esc(q.state)}">${esc(STATE[q.state] || q.state)}</span>` : ""}
@@ -366,7 +366,7 @@ function axis(D) {
     if (d.getTime() >= t0 - DAY) ticks.push(`<span style="left:${Math.max(0, ((d.getTime() - t0) / w) * 100).toFixed(2)}%">${weekly ? `${d.getMonth() + 1}/${d.getDate()}` : `${d.getMonth() + 1} 月`}</span>`);
     if (weekly) d.setDate(d.getDate() + 7); else d.setMonth(d.getMonth() + 1);
   }
-  return `<div class="lane laxis"><span></span><div class="track">${ticks.join("")}</div><span></span></div>`;
+  return `<div class="rlane laxis"><span></span><div class="track">${ticks.join("")}</div><span></span></div>`;
 }
 
 function overview(d, D) {
