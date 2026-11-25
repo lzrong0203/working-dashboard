@@ -102,12 +102,22 @@ def open_view(cfg: cfgmod.Config) -> list[tuple[str, int, bool]]:
     forwards listed in the user's ssh config are expected and ignored -- we
     only trust an actual HTTP check of the port.
     """
+    from wd.feed import feed
+
     out = []
     for name, r in cfg.realms.items():
         port = r.view_port or (cfg.hub.port if cfg.hub.realm == name else 0)
         if not port:
             continue
+        # The feed's open stream is the health check: no request per round, so
+        # the hub machine is not handed a new connection every 20 s. A plain GET
+        # is only the fallback while the feed is down or backing off.
+        f = feed(port)
+        if f.alive() or f.wait_alive(3):
+            out.append((name, port, True))
+            continue
         if _http_ok(port):
+            f.kick()
             out.append((name, port, True))
             continue
         ok = False
@@ -125,6 +135,7 @@ def open_view(cfg: cfgmod.Config) -> list[tuple[str, int, bool]]:
             if _http_ok(port):
                 ok = True
                 _last_good[name] = target
+                f.kick()
                 break
         out.append((name, port, ok))
     return out

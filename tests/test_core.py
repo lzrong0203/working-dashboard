@@ -1293,5 +1293,67 @@ class ConfirmedItemsTest(unittest.TestCase):
                 httpd.server_close()
 
 
+class FeedTest(unittest.TestCase):
+    """The agent watches a hub through one /api/events stream, not a GET per round."""
+
+    def test_feed_follows_the_hub_over_one_connection(self):
+        import threading as th
+        from types import SimpleNamespace
+
+        from wd.feed import Feed
+        from wd.hub.server import BoundedHTTPServer, make_handler
+
+        board = SimpleNamespace(cond=th.Condition(), version=1, payload=json.dumps({"sessions": [{"key": "a", "status": "busy"}]}).encode(),
+                                sse_slots=th.BoundedSemaphore(4), research={}, _recompute=lambda: None,
+                                cfg=SimpleNamespace(hub=SimpleNamespace(port=8740, peers=[]), realms={}))
+        accepted = []
+
+        class Counting(BoundedHTTPServer):
+            def process_request(self, request, client_address):
+                accepted.append(client_address)
+                super().process_request(request, client_address)
+
+        httpd = Counting(("127.0.0.1", 0), make_handler(board))
+        port = httpd.server_address[1]
+        th.Thread(target=httpd.serve_forever, daemon=True).start()
+        f = Feed(port).start()
+        try:
+            self.assertTrue(f.wait_alive(5))
+            deadline = time.time() + 5
+            while f.latest() is None and time.time() < deadline:
+                time.sleep(0.02)
+            self.assertEqual(f.latest()["sessions"][0]["status"], "busy")
+            with board.cond:  # a change on the hub is pushed down the same stream
+                board.version, board.payload = 2, json.dumps({"sessions": [{"key": "a", "status": "waiting"}]}).encode()
+                board.cond.notify_all()
+            deadline = time.time() + 5
+            while f.latest()["sessions"][0]["status"] != "waiting" and time.time() < deadline:
+                time.sleep(0.02)
+            self.assertEqual(f.latest()["sessions"][0]["status"], "waiting")
+            self.assertEqual(len(accepted), 1)
+        finally:
+            f.stop.set()
+            f.kick()
+            httpd.shutdown()
+            httpd.server_close()
+
+    def test_feed_is_not_alive_without_a_hub(self):
+        import socket
+
+        from wd.feed import Feed
+
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()  # nothing listens here now
+        f = Feed(port).start()
+        try:
+            self.assertFalse(f.wait_alive(0.5))
+            self.assertIsNone(f.latest())
+        finally:
+            f.stop.set()
+            f.kick()
+
+
 if __name__ == "__main__":
     unittest.main()

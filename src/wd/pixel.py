@@ -32,6 +32,7 @@ import uuid
 from pathlib import Path
 
 from wd import config as cfgmod
+from wd.feed import feed
 
 HOME = Path(os.environ.get("PIXEL_AGENTS_HOME", Path.home() / ".pixel-agents"))
 TOOL_FOR = {"edit": "Edit", "read": "Read", "run": "Bash", "delegate": "Task", "plan": "TodoWrite", "tool": "Tool"}
@@ -207,13 +208,12 @@ class Bridge:
             port = r.view_port or (self.cfg.hub.port if self.cfg.hub.realm == name else 0)
             if not port:
                 continue
-            try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state", timeout=4) as resp:
-                    st = json.loads(resp.read())
-                ok = True
-                out += [s for s in st.get("sessions", []) if s.get("status") != "gone"]
-            except (OSError, ValueError):
+            st = feed(port).latest()  # one open stream per hub, not a GET every step
+            if st is None:
                 continue
+            ok = True
+            # copies: step() labels them, and the feed's state is shared
+            out += [dict(s) for s in st.get("sessions", []) if s.get("status") != "gone"]
         return out if ok else None
 
     def step(self) -> None:
